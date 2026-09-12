@@ -213,6 +213,26 @@ async function route(request, env, ctx, url) {
 
       return json({ ok: false, error: "not found" }, env, 404);
     } catch (err) {
+      // 🔎 TEMP DEBUG: report the real error straight to the admin
+      // Telegram chat, since Workers dashboard logs have been hard to
+      // get to from mobile. Safe to remove once the admin-menu bug is
+      // found — see the comment on isTelegramRoute below for why the
+      // Telegram route also swallows the 500 instead of returning it.
+      const adminChatId = env.TELEGRAM_ADMIN_CHAT_ID || env.TELEGRAM_CHAT_ID;
+      if (adminChatId) {
+        const detail = String((err && err.stack) || err)
+          .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+          .slice(0, 3000);
+        ctx.waitUntil(
+          tgSendMessage(env, adminChatId, `⚠️ <b>Backend error</b>\non <code>${url.pathname}</code>:\n<pre>${detail}</pre>`).catch(() => {})
+        );
+      }
+      // Telegram retries (and shows "Wrong response from the webhook")
+      // on any non-2xx reply, which just makes button taps look dead —
+      // we've already reported the real error above, so tell Telegram
+      // everything's fine instead of returning the 500.
+      const isTelegramRoute = url.pathname === "/telegram-webhook";
+      if (isTelegramRoute) return new Response("ok");
       return json({ ok: false, error: String((err && err.message) || err) }, env, 500);
     }
 }
