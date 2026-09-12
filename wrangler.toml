@@ -48,7 +48,7 @@ ALLOWED_ORIGIN = "*"
 ADMIN_USER_IDS = "8550710288"
 # Used only for the bot's "👁️ Preview" links. Update this later once
 # the static site has a real Pages URL.
-SITE_BASE_URL = "https://chympe-explora.github.io/team-eplo-era-explore/"
+SITE_BASE_URL = "https://team-eplo-era-explore.pages.dev/"
 # The chat/group the bot posts new bookings + payment receipts to, with
 # Confirm/Reject buttons. Negative id = group/supergroup.
 TELEGRAM_CHAT_ID = "-1003766158262"
