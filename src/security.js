@@ -127,11 +127,21 @@ export function withSecurityHeaders(response, env) {
 // (Workers KV has no native INCR), but good enough for abuse detection
 // at this traffic scale — a missed race just means a request or two
 // slips through, never a security hole.
+//
+// Fails OPEN (returns 0, i.e. "not over limit") if KV throws for any
+// reason — e.g. the daily write-quota being exhausted on the free
+// plan. Rate limiting is a safety net, not core functionality: it
+// should never be the reason a real visitor's request (or the whole
+// site) goes down.
 async function bump(env, key, windowSeconds) {
-  const raw = await env.BOOKINGS.get(key);
-  const n = (parseInt(raw, 10) || 0) + 1;
-  await env.BOOKINGS.put(key, String(n), { expirationTtl: windowSeconds });
-  return n;
+  try {
+    const raw = await env.BOOKINGS.get(key);
+    const n = (parseInt(raw, 10) || 0) + 1;
+    await env.BOOKINGS.put(key, String(n), { expirationTtl: windowSeconds });
+    return n;
+  } catch {
+    return 0;
+  }
 }
 
 // limit: max requests allowed inside windowSeconds. Returns true if the
@@ -194,15 +204,19 @@ const STRIKE_THRESHOLD = 6;
 const AUTO_BLOCK_HOURS = 24;
 
 async function addStrikes(env, ip, weight, reason) {
-  const key = STRIKE_KEY(ip);
-  const raw = await env.BOOKINGS.get(key);
-  const n = (parseInt(raw, 10) || 0) + weight;
-  await env.BOOKINGS.put(key, String(n), { expirationTtl: 3600 });
-  if (n >= STRIKE_THRESHOLD) {
-    await blockIp(env, ip, AUTO_BLOCK_HOURS, reason);
-    return { blocked: true, strikes: n };
+  try {
+    const key = STRIKE_KEY(ip);
+    const raw = await env.BOOKINGS.get(key);
+    const n = (parseInt(raw, 10) || 0) + weight;
+    await env.BOOKINGS.put(key, String(n), { expirationTtl: 3600 });
+    if (n >= STRIKE_THRESHOLD) {
+      await blockIp(env, ip, AUTO_BLOCK_HOURS, reason);
+      return { blocked: true, strikes: n };
+    }
+    return { blocked: false, strikes: n };
+  } catch {
+    return { blocked: false, strikes: 0 };
   }
-  return { blocked: false, strikes: n };
 }
 
 // ---------------------------------------------------------------------
@@ -347,16 +361,14 @@ export async function securityGate(request, env, ctx) {
     await addStrikes(env, ip, 1, "missing user-agent");
   }
 
-  // 4. Rate limiting — global ceiling, then per-route.
-  const [globalLimit, globalWindow] = GLOBAL_LIMIT;
-  const underGlobal = await rateLimit(env, "global", ip, globalLimit, globalWindow);
-  if (!underGlobal) {
-    const r = await addStrikes(env, ip, 2, "global rate limit exceeded");
-    await alertOnce(env, ctx, ip, "ratelimit", "Rate limit exceeded (global)", `path: ${url.pathname}`, 900);
-    if (r.blocked) await alertOnce(env, ctx, ip, "blocked", "IP auto-blocked", `reason: repeated rate-limit violations (24h block)`, 900);
-    return json429();
-  }
-
+  // 4. Rate limiting — per-route only. (Previously also had a separate
+  // "global" counter, but that meant 2 KV writes per request — burning
+  // through Cloudflare's free-plan 1,000 writes/day cap twice as fast
+  // for no real security benefit over the per-route limits below,
+  // which already cap the endpoints worth capping tightly, e.g.
+  // /api/submit at 8 per 5 minutes. If you're on Workers Paid (10M
+  // writes/day), feel free to re-add the global check — see git
+  // history for the old code.)
   const [limit, windowSeconds] = limitFor(url.pathname);
   const underRoute = await rateLimit(env, url.pathname, ip, limit, windowSeconds);
   if (!underRoute) {
