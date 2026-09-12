@@ -1,0 +1,57 @@
+name = "chympe-booking-backend1"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+# Create this KV namespace with:
+#   wrangler kv namespace create BOOKINGS
+# then paste the id it prints below. (Same namespace as before — it now
+# also caches content/prices/discounts, on top of bookings.)
+kv_namespaces = [
+  { binding = "BOOKINGS", id = "cd92b965c0ed4581bebe2cb0b941d9cb" }
+]
+
+# BOOKING_STATUS — a Durable Object, NOT KV. This is what makes booking
+# status polling reliable: KV is eventually consistent (a write can take
+# up to 60s to reach every edge location, and an edge location can keep
+# serving its own stale cached read for up to 60s too), which is exactly
+# why confirming a booking used to show up on the visitor's site
+# "sometimes instantly, but usually not at all" — it depended on luck of
+# which Cloudflare edge location handled which request. A Durable Object
+# is a single strongly-consistent instance, so every read sees every
+# write immediately, everywhere. See src/status-store.js.
+[[durable_objects.bindings]]
+name = "BOOKING_STATUS"
+class_name = "BookingStatusDO"
+
+# Required the first time a Durable Object class is introduced. Do NOT
+# edit or remove this once deployed — later DO changes get their own new
+# [[migrations]] block with a new tag instead.
+[[migrations]]
+tag = "v1"
+new_classes = ["BookingStatusDO"]
+
+# Non-secret vars. TRUE secrets (bot token, webhook secret) are set
+# separately via `wrangler secret put` / the Cloudflare dashboard's
+# "Secret" type and are NOT touched by this file.
+#
+# ⚠️ Everything below IS touched by this file: `wrangler deploy` treats
+# this [vars] block as the complete, authoritative list of plain vars.
+# Any plain ("Text") variable added only in the dashboard and NOT listed
+# here gets wiped out the next time a deploy runs (e.g. on every git
+# push, since this project's deploy command is `npx wrangler deploy`).
+# That's why TELEGRAM_CHAT_ID/TELEGRAM_ADMIN_CHAT_ID kept reverting to
+# empty — they must live here, not only in the dashboard.
+[vars]
+ALLOWED_ORIGIN = "*"
+# Comma-separated Telegram numeric user ids allowed to drive the admin
+# bot.
+ADMIN_USER_IDS = "8550710288"
+# Used only for the bot's "👁️ Preview" links. Update this later once
+# the static site has a real Pages URL.
+SITE_BASE_URL = "https://chympe-explora.github.io/team-eplo-era-site/"
+# The chat/group the bot posts new bookings + payment receipts to, with
+# Confirm/Reject buttons. Negative id = group/supergroup.
+TELEGRAM_CHAT_ID = "-1003766158262"
+# The chat the bot posts site-content edit logs and permanent JSON
+# records to (used by the Telegram admin bot's editing menus).
+TELEGRAM_ADMIN_CHAT_ID = "8550710288"
