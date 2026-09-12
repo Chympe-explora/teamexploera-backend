@@ -7,7 +7,7 @@ compatibility_date = "2024-11-01"
 # then paste the id it prints below. (Same namespace as before — it now
 # also caches content/prices/discounts, on top of bookings.)
 kv_namespaces = [
-  { binding = "BOOKINGS", id = "cd92b965c0ed4581bebe2cb0b941d9cb" }
+  { binding = "", id = "" }
 ]
 
 # BOOKING_STATUS — a Durable Object, NOT KV. This is what makes booking
