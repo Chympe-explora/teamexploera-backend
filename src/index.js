@@ -93,20 +93,36 @@ export { BookingStatusDO } from "./status-store.js";
 
 export default {
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
+    // ⚠️ TEMPORARY DEBUG WRAPPER — remove once the "Worker threw
+    // exception" issue is diagnosed. Surfaces the real error + stack
+    // directly in the HTTP response instead of a generic Cloudflare
+    // error page, since dashboard log access wasn't available.
+    try {
+      const url = new URL(request.url);
 
-    if (request.method === "OPTIONS") {
-      return new Response(null, { headers: corsHeaders(env) });
+      if (request.method === "OPTIONS") {
+        return new Response(null, { headers: corsHeaders(env) });
+      }
+
+      // 🔒 Security gate — IP blocklist, attack-pattern detection, rate
+      // limiting, and oversized-body rejection all happen here, before any
+      // route handler runs. See security.js for the full breakdown. Blocks
+      // and abuse are reported to the admin Telegram chat automatically.
+      const blocked = await securityGate(request, env, ctx);
+      if (blocked) return withSecurityHeaders(blocked, env);
+
+      return withSecurityHeaders(await route(request, env, ctx, url), env);
+    } catch (err) {
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          debug: true,
+          message: (err && err.message) || String(err),
+          stack: (err && err.stack) || null,
+        }, null, 2),
+        { status: 500, headers: { "content-type": "application/json" } }
+      );
     }
-
-    // 🔒 Security gate — IP blocklist, attack-pattern detection, rate
-    // limiting, and oversized-body rejection all happen here, before any
-    // route handler runs. See security.js for the full breakdown. Blocks
-    // and abuse are reported to the admin Telegram chat automatically.
-    const blocked = await securityGate(request, env, ctx);
-    if (blocked) return withSecurityHeaders(blocked, env);
-
-    return withSecurityHeaders(await route(request, env, ctx, url), env);
   },
 };
 
