@@ -208,7 +208,7 @@ async function route(request, env, ctx, url) {
 
       // ---- one shared Telegram webhook ----
       if (url.pathname === "/telegram-webhook" && request.method === "POST") {
-        return handleTelegramWebhook(request, env, ctx);
+        return await handleTelegramWebhook(request, env, ctx);
       }
 
       return json({ ok: false, error: "not found" }, env, 404);
