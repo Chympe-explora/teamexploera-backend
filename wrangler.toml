@@ -28,7 +28,7 @@ class_name = "BookingStatusDO"
 # [[migrations]] block with a new tag instead.
 [[migrations]]
 tag = "v1"
-new_classes = ["BookingStatusDO"]
+new_sqlite_classes = ["BookingStatusDO"]
 
 # Non-secret vars. TRUE secrets (bot token, webhook secret) are set
 # separately via `wrangler secret put` / the Cloudflare dashboard's
