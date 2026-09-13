@@ -83,7 +83,7 @@ import { handleEraMessage, handleEraPoll, handleEraTyping } from "./era-ai.js";
 import { handleGetRatings, handleSubmitRating } from "./ratings.js";
 import { createOrder, getOrder, handlePaymentWebhook } from "./payments.js";
 import { tgSendMessage } from "./telegram.js";
-import { securityGate, withSecurityHeaders, secureCompare, isBlocked, adminUnblock } from "./security.js";
+import { securityGate, withSecurityHeaders, secureCompare, isBlocked, adminUnblock, getClientIp } from "./security.js";
 import { isManualModeEnabled } from "./manual-mode.js";
 // The Durable Object class behind booking/refund status (see
 // status-store.js) — Workers requires DO classes to be exported from
@@ -112,6 +112,16 @@ export default {
 
 async function route(request, env, ctx, url) {
     try {
+      // ---- debug: what IP + ADMIN_IPS does the Worker actually see?
+      // Exempted from the security gate (see EXEMPT_PATHS in
+      // security.js) so it's always reachable, even from a
+      // currently-blocked or non-allowlisted IP. Safe to leave in
+      // permanently — it reveals no secrets, only your own connection's
+      // IP and the raw ADMIN_IPS var. ----
+      if (url.pathname === "/api/whoami") {
+        return json({ ok: true, ip: getClientIp(request), adminIpsRaw: env.ADMIN_IPS || "" }, env);
+      }
+
       // ---- booking (unchanged) ----
       if (url.pathname === "/api/visit" && request.method === "POST") return handleVisit(request, env);
       if (url.pathname === "/api/tap" && request.method === "POST") return handleTap(request, env);

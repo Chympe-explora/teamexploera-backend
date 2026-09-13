@@ -321,7 +321,7 @@ function bodyTooLarge(request, url) {
 // normally.
 // ---------------------------------------------------------------------
 
-const EXEMPT_PATHS = new Set(["/telegram-webhook"]);
+const EXEMPT_PATHS = new Set(["/telegram-webhook", "/api/whoami"]);
 
 // Trusted admin/tester IPs — set as a comma-separated list in
 // wrangler.toml's [vars] block, e.g.:
@@ -340,6 +340,21 @@ function isAllowlistedIp(env, ip) {
   return list.includes(ip);
 }
 
+// Primary admin bypass: a shared secret in the `x-admin-secret` header,
+// checked with the same constant-time compare used everywhere else
+// (see secureCompare above). This works from ANY IP, on ANY network,
+// forever — unlike ADMIN_IPS, it doesn't depend on a mobile connection
+// having a stable public IP (mobile carriers commonly use CGNAT, where
+// the IP a site sees can differ from what whatismyipaddress.com shows,
+// and can change per-connection). ADMIN_IPS is kept below as a
+// convenience fallback only — it is never the only way in anymore, so
+// a stale/wrong ADMIN_IPS value can no longer lock the admin out.
+function isAdminRequest(env, request, ip) {
+  const provided = request.headers.get("x-admin-secret") || "";
+  if (env.ADMIN_API_SECRET && secureCompare(provided, env.ADMIN_API_SECRET)) return true;
+  return isAllowlistedIp(env, ip);
+}
+
 export async function securityGate(request, env, ctx) {
   const url = new URL(request.url);
 
@@ -347,8 +362,9 @@ export async function securityGate(request, env, ctx) {
 
   const ip = getClientIp(request);
 
-  // 0. Trusted admin IP — bypass every check below entirely.
-  if (isAllowlistedIp(env, ip)) return null;
+  // 0. Trusted admin — bypass every check below entirely. Checked via
+  // header secret first, IP allowlist second (see isAdminRequest above).
+  if (isAdminRequest(env, request, ip)) return null;
 
   // 1. Already blocked?
   if (await isBlocked(env, ip)) {
