@@ -55,3 +55,10 @@ TELEGRAM_CHAT_ID = "-1003766158262"
 # The chat the bot posts site-content edit logs and permanent JSON
 # records to (used by the Telegram admin bot's editing menus).
 TELEGRAM_ADMIN_CHAT_ID = "8550710288"
+# Comma-separated IP addresses that skip the security gate entirely
+# (see src/security.js#isAllowlistedIp) — put your own testing IP(s)
+# here so repeated testing never trips the auto-block again. Find your
+# IP at whatismyipaddress.com. This is a mobile-data IP, so it WILL
+# change over time — if the block ever comes back, re-check your IP
+# and update this line again.
+ADMIN_IPS = "152.59.49.135"

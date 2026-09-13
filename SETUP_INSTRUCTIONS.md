@@ -55,13 +55,13 @@ npx wrangler deploy
 
 **You should see:**
 ```
-✓ Published to https://chympe-booking-backend.workers.dev
+✓ Published to https://teamexploera-backend.book-and-explore.workers.dev
 ```
 
 ### Step 6: Test It Works
 
 ```bash
-curl https://chympe-booking-backend.workers.dev/api/content?site=root
+curl https://teamexploera-backend.book-and-explore.workers.dev/api/content?site=root
 ```
 
 **Should return JSON** (not error)
@@ -110,7 +110,7 @@ This file has been updated with:
 
 ```toml
 # ✅ This is now correct:
-SITE_BASE_URL = "https://chympe-explora.github.io/team-explo-era-site/"
+SITE_BASE_URL = "https://team-eplo-era-explore.pages.dev/"
 
 # Your Telegram settings:
 TELEGRAM_CHAT_ID = "-1003766158262"
@@ -256,7 +256,7 @@ npx wrangler deploy
 ### Test if backend is running
 
 ```bash
-curl https://chympe-booking-backend.workers.dev/api/content?site=root
+curl https://teamexploera-backend.book-and-explore.workers.dev/api/content?site=root
 ```
 
 Should return JSON with your site configuration.
@@ -264,7 +264,7 @@ Should return JSON with your site configuration.
 ### Test booking submission
 
 ```bash
-curl -X POST https://chympe-booking-backend.workers.dev/api/submit \
+curl -X POST https://teamexploera-backend.book-and-explore.workers.dev/api/submit \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Test User",
@@ -288,11 +288,11 @@ The frontend (`team-eplo-era-site`) automatically connects to this backend.
 - Submits bookings to `/api/submit`
 - Gets prices from `/api/calculate-price`
 
-**File that connects them:** `team-explo-era-site/live-content.js`
+**File that connects them:** `team-eplo-era-explore/live-content.js`
 
 ```javascript
 // This is already set correctly:
-const BACKEND_URL = "https://chympe-booking-backend.workers.dev";
+const BACKEND_URL = "https://teamexploera-backend.book-and-explore.workers.dev";
 ```
 
 ---
@@ -324,11 +324,11 @@ wrangler kv:key delete --namespace-id cd92b965c0ed4581bebe2cb0b941d9cb "*"
 
 ## 📞 Quick Reference
 
-**Backend URL:** `https://chympe-booking-backend.workers.dev`
+**Backend URL:** `https://teamexploera-backend.book-and-explore.workers.dev`
 
 **Test backend:**
 ```bash
-curl https://chympe-booking-backend.workers.dev/api/content?site=root
+curl https://teamexploera-backend.book-and-explore.workers.dev/api/content?site=root
 ```
 
 **Deploy:**
@@ -484,7 +484,7 @@ threshold you'll also get an "IP auto-blocked" message.
 
 This backend is completely fixed and ready to run.
 
-**Frontend Setup:** See `team-explo-era-site/SETUP_INSTRUCTIONS.md`
+**Frontend Setup:** See `team-eplo-era-explore/SETUP_INSTRUCTIONS.md`
 
 **Status:** ✅ Ready to Deploy
 
