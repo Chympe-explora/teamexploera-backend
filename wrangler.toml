@@ -61,4 +61,4 @@ TELEGRAM_ADMIN_CHAT_ID = "8550710288"
 # IP at whatismyipaddress.com. This is a mobile-data IP, so it WILL
 # change over time — if the block ever comes back, re-check your IP
 # and update this line again.
-ADMIN_IPS = "152.59.49.135"
+ADMIN_IPS = "152.59.49.135,<new-ip>"
