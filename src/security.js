@@ -323,12 +323,32 @@ function bodyTooLarge(request, url) {
 
 const EXEMPT_PATHS = new Set(["/telegram-webhook"]);
 
+// Trusted admin/tester IPs — set as a comma-separated list in
+// wrangler.toml's [vars] block, e.g.:
+//   ADMIN_IPS = "203.0.113.45,198.51.100.9"
+// Any request from one of these IPs skips the entire security gate
+// below (blocklist, attack-pattern check, rate limiting) — added
+// because the admin's own repeated testing was tripping the same
+// strike system built for abusive traffic and getting auto-blocked
+// for 24h. If your IP changes (common on home broadband), update this
+// list and redeploy.
+function isAllowlistedIp(env, ip) {
+  const list = String(env.ADMIN_IPS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return list.includes(ip);
+}
+
 export async function securityGate(request, env, ctx) {
   const url = new URL(request.url);
 
   if (EXEMPT_PATHS.has(url.pathname)) return null;
 
   const ip = getClientIp(request);
+
+  // 0. Trusted admin IP — bypass every check below entirely.
+  if (isAllowlistedIp(env, ip)) return null;
 
   // 1. Already blocked?
   if (await isBlocked(env, ip)) {
