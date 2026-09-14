@@ -304,7 +304,7 @@ export const SCHEMA_DEFAULTS = {
           },
           {
             "type": "heading",
-            "text": "🌑 The Cave Experience"
+            "text": "| The Cave Experience"
           },
           {
             "type": "subheading",
@@ -737,7 +737,7 @@ export const SCHEMA_DEFAULTS = {
         },
         "exp_night": {
           "enabled": true,
-          "image": "Blue water cave.jpg",
+          "image": "overnight.jpg",
           "alt": "Night by the water"
         },
         "exp_food": {
