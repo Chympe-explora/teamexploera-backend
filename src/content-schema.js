@@ -764,7 +764,7 @@ export const SCHEMA_DEFAULTS = {
         },
         "about_4": {
           "enabled": true,
-          "image": "Camp Under Rock Overhang.jpg",
+          "image": "explo.jpg",
           "alt": "Eco-friendly tourism"
         },
         "about_5": {
