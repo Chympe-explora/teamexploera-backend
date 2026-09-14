@@ -732,7 +732,7 @@ export const SCHEMA_DEFAULTS = {
         },
         "exp_water": {
           "enabled": true,
-          "image": "Water Experience Waterfall.jpg",
+          "image": "newimage.jpg",
           "alt": "Boat rafting"
         },
         "exp_night": {
@@ -769,7 +769,7 @@ export const SCHEMA_DEFAULTS = {
         },
         "about_5": {
           "enabled": true,
-          "image": "Waterfall Morning Light.jpg",
+          "image": "explo.jpg",
           "alt": "Welcome to Explo Era"
         },
         "booking_1": { "enabled": false, "image": "Cave Ecosystem 2.jpg", "alt": "Best price, no surprises" },
