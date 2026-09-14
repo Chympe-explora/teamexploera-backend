@@ -328,7 +328,7 @@ export const SCHEMA_DEFAULTS = {
           },
           {
             "type": "heading",
-            "text": "💦 The Waterfall Experience"
+            "text": "| The Waterfall Experience"
           },
           {
             "type": "subheading",
@@ -607,7 +607,7 @@ export const SCHEMA_DEFAULTS = {
           },
             {
   "type": "heading",
-  "text": "🏞️ Krem Chympe Falls & Caves"
+  "text": "| Krem Chympe Falls & Caves"
 },
 {
   "type": "paragraph",
@@ -615,7 +615,7 @@ export const SCHEMA_DEFAULTS = {
 },
 {
   "type": "heading",
-  "text": "🌿 Wilderness Expedition"
+  "text": "| Wilderness Expedition"
 },
 {
   "type": "paragraph",
@@ -627,7 +627,7 @@ export const SCHEMA_DEFAULTS = {
 },
 {
   "type": "heading",
-  "text": "🏡 Homestay Experience"
+  "text": "| Homestay Experience"
 },
 {
   "type": "paragraph",
@@ -639,7 +639,7 @@ export const SCHEMA_DEFAULTS = {
 },
 {
   "type": "heading",
-  "text": "🔥 Real Connection"
+  "text": "| Real Connection"
 },
 {
   "type": "paragraph",
@@ -780,10 +780,10 @@ export const SCHEMA_DEFAULTS = {
       },
       "footer": {
         "brandName": "Team explo era",
-        "locationLine": "Brishyrnot, Hno: 34, Near Football Ground, Po: Lumshonong, East Jaintia Hills, Meghalaya, 793000, India",
+        "locationLine": "Brishyrnot, Hno: 34, Near Football Ground, Po: Lumshonong, East Jaintia Hills, Meghalaya, 793200, India",
         "contactTitle": "Contact Us",
         "phone": "+91 8787679579",
-        "email": "chympeexplora@gmail.com",
+        "email": "teamexploera@gmail.com",
         "followTitle": "Follow Us On",
         "importantLinkTitle": "Important Link",
         "refundPolicyLabel": "Refund Policy",
@@ -795,7 +795,7 @@ export const SCHEMA_DEFAULTS = {
         "sections": [
           {
             "number": "1",
-            "heading": "Cancellation by Team Chympe Explora",
+            "heading": "Cancellation by Team Explo Era",
             "blocks": [
               {
                 "type": "text",
@@ -1166,10 +1166,10 @@ export const SCHEMA_DEFAULTS = {
       "whatsappNumber": "916001877518",
       "upiId": "kremchympe@upi",
       "bank": {
-        "name": "Krem Chympe Adventure",
+        "name": "Senly suchiang",
         "account": "123456789012",
         "ifsc": "SBIN0001234",
-        "bankName": "SBI, Cherrapunji Branch"
+        "bankName": "Meghalaya rural bank, Lumshnong Branch"
       },
       "prices": {
         "trek": 1500,
@@ -1375,7 +1375,7 @@ export const SCHEMA_DEFAULTS = {
         "intro": "Deep in the wild landscapes of Meghalaya, Krem Chympe isn't another tourist spot on a checklist. It's where adventure lives. Where nature shows off. Where you leave the ordinary world behind and step into something raw, real, and unforgettable. From the moment you leave the road, everything changes. The 4×4 rattles through rugged terrain that GPS doesn't even recognize. The trek pulls you into ancient forests where sunlight filters through leaves like gold dust. Waterfalls appear like secrets, hidden until you're standing right in front of them. And then — the cave.",
         "journeys": [
           {
-            "emoji": "🛻",
+            "emoji": "|",
             "number": "01",
             "title": "The Journey",
             "tagline": "The road becomes part of the story.",
@@ -1391,7 +1391,7 @@ export const SCHEMA_DEFAULTS = {
             }
           },
           {
-            "emoji": "🌿",
+            "emoji": "|",
             "number": "02",
             "title": "The Trek",
             "tagline": "Walk through forests that feel prehistoric.",
@@ -1408,7 +1408,7 @@ export const SCHEMA_DEFAULTS = {
             }
           },
           {
-            "emoji": "🕳️",
+            "emoji": "|",
             "number": "03",
             "title": "The Cave",
             "tagline": "Not a walk-through. A journey.",
@@ -1425,7 +1425,7 @@ export const SCHEMA_DEFAULTS = {
             }
           },
           {
-            "emoji": "🌊",
+            "emoji": "|",
             "number": "04",
             "title": "The Thrill",
             "tagline": "Live the adventure.",
@@ -1814,11 +1814,11 @@ export const SCHEMA_DEFAULTS = {
         }
       ],
       "footer": {
-        "brandName": "TEAM CHYMPE EXPLORA",
-        "locationLine": "Brishyrnot, Hno: 34, Near Football Ground, Po: Lumshonong, East Jaintia Hills, Meghalaya, 793000, India",
+        "brandName": "TEAM EXPLO ERA",
+        "locationLine": "Brishyrnot, Hno: 34, Near Football Ground, Po: Lumshonong, East Jaintia Hills, Meghalaya, 793200, India",
         "contactTitle": "Contact Us",
         "phone": "+91 8787679579",
-        "email": "chympeexplora@gmail.com",
+        "email": "teamexploera@gmail.com",
         "followTitle": "Follow Us On",
         "importantLinkTitle": "Important Link",
         "refundPolicyLabel": "Refund Policy",
@@ -1830,7 +1830,7 @@ export const SCHEMA_DEFAULTS = {
         "sections": [
           {
             "number": "1",
-            "heading": "Cancellation by Krem Chympe",
+            "heading": "Cancellation by Team Explo Era",
             "blocks": [
               {
                 "type": "text",
@@ -1838,7 +1838,7 @@ export const SCHEMA_DEFAULTS = {
               },
               {
                 "type": "text",
-                "text": "Krem Chympe may cancel, postpone or modify an activity if heavy rainfall, flooding, high water levels, unsafe cave conditions, dangerous trails or other natural circumstances make the experience unsafe."
+                "text": "Team Explo Era may cancel, postpone or modify an activity if heavy rainfall, flooding, high water levels, unsafe cave conditions, dangerous trails or other natural circumstances make the experience unsafe."
               },
               {
                 "type": "list",
@@ -1864,7 +1864,7 @@ export const SCHEMA_DEFAULTS = {
               },
               {
                 "type": "list",
-                "lead": "For the cancelled activity, Krem Chympe may offer:",
+                "lead": "For the cancelled activity, Team Explo Era may offer:",
                 "items": [
                   "An alternative activity;",
                   "Rescheduling; or",
@@ -1891,7 +1891,7 @@ export const SCHEMA_DEFAULTS = {
               },
               {
                 "type": "text",
-                "text": "If an activity is stopped or cancelled because continuing would create a safety risk, it will be handled under the Cancellation by Krem Chympe section of this policy."
+                "text": "If an activity is stopped or cancelled because continuing would create a safety risk, it will be handled under the Cancellation by Team Explo Era section of this policy."
               }
             ]
           },
@@ -1945,7 +1945,7 @@ export const SCHEMA_DEFAULTS = {
             "blocks": [
               {
                 "type": "text",
-                "text": "To cancel your booking, contact Krem Chympe using the contact details provided on the website or your booking confirmation."
+                "text": "To cancel your booking, contact Team Explo Era using the contact details provided on the website or your booking confirmation."
               },
               {
                 "type": "list",
@@ -1970,7 +1970,7 @@ export const SCHEMA_DEFAULTS = {
             "blocks": [
               {
                 "type": "text",
-                "text": "Krem Chympe is an adventure destination involving trekking, cave exploration, water activities, off-roading, camping and other outdoor experiences."
+                "text": "Team Explo Era is an adventure destination involving trekking, cave exploration, water activities, off-roading, camping and other outdoor experiences."
               },
               {
                 "type": "text",
@@ -2572,7 +2572,7 @@ export const SCHEMA_DEFAULTS = {
         "subtitle": "Four waterfalls, each reached only after real distance on foot",
         "locations": [
           {
-            "emoji": "🦋",
+            "emoji": "|",
             "title": "Butterfly Falls",
             "subtitle": "The hidden waterfall, found while gathering firewood",
             "story": "Butterfly Falls is a hidden waterfall discovered during an earlier exploration of the area. According to the explorer's account, the waterfall was not noticed during the main exploration — it was found later, while the explorer was searching the surrounding area for firewood after planning to camp nearby. The large number of butterflies around the waterfall inspired its name.",
@@ -2585,7 +2585,7 @@ export const SCHEMA_DEFAULTS = {
             "mapLink": ""
           },
           {
-            "emoji": "🌫️",
+            "emoji": "|",
             "title": "Langam Falls",
             "subtitle": "Named for a first impression, not a story",
             "story": "Langam Falls was named by hunters based on their first impression of the place. The surrounding environment created an unsettling yet fascinating feeling — a combination of isolation, unfamiliarity and disorientation. The name reflects that first impression of the waterfall and its surroundings.",
@@ -2594,7 +2594,7 @@ export const SCHEMA_DEFAULTS = {
             "mapLink": ""
           },
           {
-            "emoji": "🌊",
+            "emoji": "|",
             "title": "Linching Falls",
             "subtitle": "No photograph. Only the destination.",
             "story": "Linching Falls is a remote waterfall known through the knowledge of hunters who travel through the surrounding wilderness. It is one of the major destinations of the expedition. The name — given by hunters — is the only name this waterfall is known by.",
@@ -2603,7 +2603,7 @@ export const SCHEMA_DEFAULTS = {
             "mapLink": ""
           },
           {
-            "emoji": "❓",
+            "emoji": "|",
             "title": "The Unnamed Waterfall",
             "subtitle": "3 km beyond Linching Falls",
             "story": "Beyond Linching Falls, approximately 3 km ahead, lies another waterfall that currently has no established name. There is no official photograph of this waterfall — it remains the expedition's final discovery point.",
