@@ -47,7 +47,7 @@ import {
 import { getAuth, isLocked, lockAccount, tryUnlock, setCustomPassword, setAdminPhone, requestGuideReset, allowGuideReset, generateGuideResetCode, redeemGuideResetCode } from "./auth.js";
 import { isManualModeEnabled, setManualModeEnabled } from "./manual-mode.js";
 import { sendBookingToOne } from "./booking.js";
-import { isRateLimitExempt, setRateLimitExempt, clearRateLimitExempt, listRateLimitExemptions } from "./security.js";
+import { isRateLimitExempt, setRateLimitExempt, clearRateLimitExempt, listRateLimitExemptions, isBlocked, adminUnblock } from "./security.js";
 // Same strongly-consistent status source the visitor-facing polling
 // endpoints use (see status-store.js) — keeps the admin bot's view of a
 // booking's status from ever disagreeing with what the visitor sees.
@@ -435,6 +435,16 @@ async function sendRateLimitMenu(env, chatId, note) {
   const exemptions = await listRateLimitExemptions(env);
   const rows = exemptions.map((r) => [btn(`🔴 Turn rate limit back ON — ${r.ip}`, `rlclear:${r.ip}`)]);
   rows.push([btn("➕ Turn Rate Limit OFF for an IP", "rlnew")]);
+  // 🔓 Separate from the exemption above: if someone (a visitor, or you
+  // while testing) tripped the AUTO-BLOCK from hitting the rate limit
+  // repeatedly, "can't book"/"rating shows something went wrong" is what
+  // that looks like from the outside — and it's a hard 403 that happens
+  // BEFORE the exemption above is ever checked, so exempting an IP after
+  // the fact used to look like it "didn't work" unless you also cleared
+  // the block. Turning an exemption ON now clears it automatically (see
+  // setRateLimitExempt in security.js) — this button is for clearing a
+  // block WITHOUT also giving that IP a standing rate-limit exemption.
+  rows.push([btn("🔓 Unblock an IP", "rlunblockstart")]);
   rows.push([btn("⬅️ Back", "home")]);
 
   const list = exemptions.length
@@ -446,9 +456,24 @@ async function sendRateLimitMenu(env, chatId, note) {
   const text =
     (note ? note + "\n\n" : "") +
     `🚦 <b>Rate Limit by IP</b>\n\n` +
-    `Turning this OFF for an IP only lifts its request-count cap — the malware/brute-force/scanner defenses (blocklist + attack-pattern detection) still apply to it. Every exemption requires a real phone number, so it's always tied to a person you can identify, never an anonymous IP.\n\n` +
+    `Turning this OFF for an IP only lifts its request-count cap — the malware/brute-force/scanner defenses (blocklist + attack-pattern detection) still apply to it, and it also clears any existing block on that IP. Every exemption requires a real phone number, so it's always tied to a person you can identify, never an anonymous IP.\n\n` +
+    `If a visitor says they "can't book" or their rating shows an error, that's usually an auto-block from hitting the limit, not the limit itself — use 🔓 Unblock an IP below to clear just that, without a standing exemption.\n\n` +
     `<b>Currently exempt:</b>\n${list}`;
   await tgSendMessage(env, chatId, text, { reply_markup: kb(rows) });
+}
+
+// 🔓 Standalone unblock — same IP-entry step as 🚦 Rate Limit, but only
+// clears security.js's blocklist + strike count for that IP (adminUnblock),
+// with no rate-limit exemption attached. Use this for a one-off "please
+// let this IP back in" without vouching for it long-term.
+async function sendUnblockPrompt(env, chatId) {
+  await setSession(env, chatId, { awaiting: { type: "rlunblockip" } });
+  await tgSendMessage(
+    env,
+    chatId,
+    `🔓 <b>Unblock an IP</b>\n\nSend the IP address to unblock, e.g. <code>203.0.113.45</code>. This only clears an existing block — it does not exempt the IP from future rate limiting.`,
+    { reply_markup: kb([[btn("❌ Cancel", "ratelimitmenu")]]) }
+  );
 }
 
 // ---------------- GUIDE MANAGEMENT (admin side) ----------------
@@ -916,12 +941,22 @@ async function handleBookingCodeLookup(env, chatId, bookingId) {
   // guide's own copy), every copy — including this one — gets updated
   // to match, exactly like the normal multi-guide race in
   // booking.js#handleBookingCallback.
+  //
+  // Also shown when status is "cancelled" — i.e. every guide it was sent
+  // to has declined it (see booking.js#handleBookingCallback's "all
+  // eligible guides declined" fallthrough) and the visitor has been sent
+  // here via the "Chat With Admin on WhatsApp" button. Tapping ✅ Confirm
+  // here overrides the guides' rejection and settles it as confirmed by
+  // hand (see the currentStatus === "cancelled" carve-out in
+  // handleBookingCallback); ❌ Reject on an already-cancelled booking is
+  // a harmless no-op ("already settled"). Never shown once "confirmed" —
+  // that's final and isn't meant to be undone from here.
   const replyMarkup =
-    status === "pending"
+    status === "pending" || status === "cancelled"
       ? { inline_keyboard: [[{ text: "✅ Confirm", callback_data: `confirm:${bookingId}` }, { text: "❌ Reject", callback_data: `cancel:${bookingId}` }]] }
       : undefined;
   const res = await tgSendMessage(env, chatId, text, replyMarkup ? { reply_markup: replyMarkup } : undefined);
-  if (status === "pending" && res && res.ok && res.result && res.result.message_id) {
+  if ((status === "pending" || status === "cancelled") && res && res.ok && res.result && res.result.message_id) {
     const msgRefsRaw = await env.BOOKINGS.get(`bookingmsg:${bookingId}`);
     let msgRefs = [];
     if (msgRefsRaw) {
@@ -1467,6 +1502,8 @@ async function handleCallback(env, chatId, messageId, data, userId) {
     await clearRateLimitExempt(env, ip);
     return sendRateLimitMenu(env, chatId, `✅ Rate limiting is back ON for <code>${escapeHtml(ip)}</code>.`);
   }
+
+  if (action === "rlunblockstart") return sendUnblockPrompt(env, chatId);
 
   if (action === "stats") return sendStatsMenu(env, chatId);
 
@@ -2366,7 +2403,30 @@ async function handleAwaitedInput(env, chatId, session, msg) {
       await sendRateLimitMenu(env, chatId, `❌ Couldn't save that exemption: ${escapeHtml(e.message || "unknown error")}`);
       return;
     }
-    await sendRateLimitMenu(env, chatId, `✅ Rate limiting turned OFF for <code>${escapeHtml(awaiting.ip)}</code> — tied to +${escapeHtml(phone)}. Malware/brute-force/scanner protection still applies to this IP as normal.`);
+    await sendRateLimitMenu(env, chatId, `✅ Rate limiting turned OFF for <code>${escapeHtml(awaiting.ip)}</code> — tied to +${escapeHtml(phone)}. Any existing block on this IP (e.g. from hitting the limit repeatedly) was also lifted, so they can book/rate again right away. Malware/brute-force/scanner protection still applies to this IP as normal.`);
+    return;
+  }
+
+  // 🔓 Standalone unblock (see sendUnblockPrompt above) — clears the
+  // block + strike count only, no rate-limit exemption attached.
+  if (awaiting.type === "rlunblockip") {
+    const ip = (msg.text ?? "").trim();
+    if (!/^[0-9a-fA-F:.]{3,45}$/.test(ip)) {
+      await tgSendMessage(env, chatId, `That doesn't look like a valid IP address. Send just the address, e.g. <code>203.0.113.45</code>, or tap Cancel.`, {
+        reply_markup: kb([[btn("❌ Cancel", "ratelimitmenu")]]),
+      });
+      return;
+    }
+    await clearSession(env, chatId);
+    const wasBlocked = await isBlocked(env, ip);
+    await adminUnblock(env, ip);
+    await sendRateLimitMenu(
+      env,
+      chatId,
+      wasBlocked
+        ? `✅ <code>${escapeHtml(ip)}</code> was blocked — it's unblocked now and can book/rate again.`
+        : `ℹ️ <code>${escapeHtml(ip)}</code> wasn't actually blocked, but its strike count has been cleared anyway.`
+    );
     return;
   }
 

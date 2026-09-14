@@ -646,7 +646,18 @@ export async function handleBookingCallback(cb, env) {
     // this tap landed. Just tell them and refresh THEIR copy to match
     // the real outcome — every other copy was already updated by
     // whoever settled it, so there's nothing left to do here.
-    if (currentStatus && currentStatus !== "pending") {
+    //
+    // ONE exception: currentStatus === "cancelled" (every guide declined
+    // it) plus action === "confirm" is an intentional ADMIN OVERRIDE, not
+    // a stale tap — it's the ✅ Confirm button on the code-lookup message
+    // the admin gets after the visitor reaches out on WhatsApp post-
+    // rejection (see handleBookingCodeLookup in telegram-bot.js). Let
+    // that one combination fall through to the normal settle path below
+    // instead of bailing out here. Re-tapping ❌ Reject on an
+    // already-cancelled booking still bails out as a harmless no-op, and
+    // "confirmed" is still always final either way.
+    const isAdminOverrideOfRejection = currentStatus === "cancelled" && action === "confirm";
+    if (currentStatus && currentStatus !== "pending" && !isAdminOverrideOfRejection) {
       tg(env, "answerCallbackQuery", {
         callback_query_id: cb.id,
         text: currentStatus === "confirmed" ? "Already confirmed — another guide got there first." : "This booking was already settled.",

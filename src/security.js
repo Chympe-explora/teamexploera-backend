@@ -505,6 +505,17 @@ async function readExemptIndex(env) {
 // code) is required — this is what makes the exemption a real,
 // identifiable person rather than an anonymous carve-out, e.g. so the
 // admin can call/WhatsApp them if that IP later starts misbehaving.
+//
+// Also lifts any EXISTING block/strikes on this IP (see adminUnblock
+// above). Without this, exempting an IP that already tripped the
+// auto-block (STRIKE_THRESHOLD reached from repeated rate-limit hits —
+// e.g. testing bookings/ratings back-to-back) looked completely broken:
+// the blocklist check (securityGate step 1) runs BEFORE the rate-limit-
+// exemption check (step 4), so a still-blocked IP kept getting 403s no
+// matter how the rate limit itself was configured. Turning this toggle
+// ON is the admin vouching for a real person by name/phone — that
+// should also mean "let them back in right now", not just "stop
+// counting their future requests".
 export async function setRateLimitExempt(env, ip, phone, note) {
   const digits = String(phone || "").replace(/[^\d]/g, "");
   if (!digits) throw new Error("A phone number is required to exempt an IP from rate limiting.");
@@ -518,6 +529,7 @@ export async function setRateLimitExempt(env, ip, phone, note) {
     index.push(ip);
     await env.BOOKINGS.put(RL_EXEMPT_LIST_KEY, JSON.stringify(index));
   }
+  await adminUnblock(env, ip);
   return record;
 }
 
