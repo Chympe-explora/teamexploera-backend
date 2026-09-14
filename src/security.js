@@ -65,6 +65,35 @@ export function getClientIp(request) {
   );
 }
 
+// Mobile carriers commonly hand a device a stable /64 IPv6 prefix but
+// let the low 64 bits (the "interface identifier") rotate — SLAAC
+// privacy/temporary addresses (RFC 4941), or simply a new address after
+// a tower handoff. That means the SAME visitor can show up as a
+// different full IPv6 address from one request to the next, sometimes
+// even a few seconds apart. Keying blocks/strikes/rate-limit-exemptions
+// off the full address made all three look broken for mobile visitors:
+// an admin would exempt or unblock one exact address, and the very next
+// request — from the same phone, same network — would arrive under a
+// different one and get rate-limited/blocked all over again.
+//
+// The fix: normalize every IPv6 address down to its /64 network prefix
+// (the first 4 groups) before using it as a KV key. IPv4 addresses are
+// returned unchanged. This is a simplification (it assumes the first 4
+// groups are never themselves compressed away by "::"), which holds for
+// every real-world global-unicast address — those never start with a
+// run of zero groups — so it's safe for this purpose.
+export function normalizeIp(ip) {
+  if (!ip || ip.indexOf(":") === -1) return ip; // IPv4 (or "unknown") — no change
+  const groups = ip
+    .split(":")
+    .filter((g) => g !== "") // drop empty parts from "::" compression
+    .map((g) => g.toLowerCase().replace(/^0+(?=[0-9a-f])/, "")); // "0192" -> "192", so a
+  // manually-typed address (leading zeros, mixed case) still lands on
+  // the same key as the canonical form Cloudflare sends.
+  if (groups.length < 4) return ip; // too short/odd shape to safely take a /64 — fall back to exact match
+  return groups.slice(0, 4).join(":") + "::";
+}
+
 // Constant-time-ish string compare — prevents an attacker from timing
 // how many leading characters of a guessed secret matched a byte-by-byte
 // `===` comparison. Used for ADMIN_API_SECRET / webhook secret checks.
@@ -147,7 +176,7 @@ async function bump(env, key, windowSeconds) {
 // limit: max requests allowed inside windowSeconds. Returns true if the
 // request should be ALLOWED (i.e. under the limit).
 async function rateLimit(env, bucket, ip, limit, windowSeconds) {
-  const key = `sec:rl:${bucket}:${ip}`;
+  const key = `sec:rl:${bucket}:${normalizeIp(ip)}`;
   const n = await bump(env, key, windowSeconds);
   return n <= limit;
 }
@@ -191,11 +220,11 @@ const STRIKE_KEY = (ip) => `sec:strikes:${ip}`;
 const ALERT_THROTTLE_KEY = (ip, kind) => `sec:alerted:${kind}:${ip}`;
 
 export async function isBlocked(env, ip) {
-  return !!(await env.BOOKINGS.get(BLOCK_KEY(ip)));
+  return !!(await env.BOOKINGS.get(BLOCK_KEY(normalizeIp(ip))));
 }
 
 async function blockIp(env, ip, hours, reason) {
-  await env.BOOKINGS.put(BLOCK_KEY(ip), reason || "auto-blocked", { expirationTtl: Math.round(hours * 3600) });
+  await env.BOOKINGS.put(BLOCK_KEY(normalizeIp(ip)), reason || "auto-blocked", { expirationTtl: Math.round(hours * 3600) });
 }
 
 // Adds `weight` strikes against an IP (expiring after 1h) and returns
@@ -204,13 +233,14 @@ const STRIKE_THRESHOLD = 6;
 const AUTO_BLOCK_HOURS = 24;
 
 async function addStrikes(env, ip, weight, reason) {
+  const normalized = normalizeIp(ip);
   try {
-    const key = STRIKE_KEY(ip);
+    const key = STRIKE_KEY(normalized);
     const raw = await env.BOOKINGS.get(key);
     const n = (parseInt(raw, 10) || 0) + weight;
     await env.BOOKINGS.put(key, String(n), { expirationTtl: 3600 });
     if (n >= STRIKE_THRESHOLD) {
-      await blockIp(env, ip, AUTO_BLOCK_HOURS, reason);
+      await blockIp(env, normalized, AUTO_BLOCK_HOURS, reason);
       return { blocked: true, strikes: n };
     }
     return { blocked: false, strikes: n };
@@ -360,7 +390,7 @@ export async function securityGate(request, env, ctx) {
 
   if (EXEMPT_PATHS.has(url.pathname)) return null;
 
-  const ip = getClientIp(request);
+  const ip = normalizeIp(getClientIp(request));
 
   // 0. Trusted admin — bypass every check below entirely. Checked via
   // header secret first, IP allowlist second (see isAdminRequest above).
@@ -462,8 +492,9 @@ export function honeypotTripped(data) {
 // /api/admin/unblock in index.js (both require x-admin-secret, same as
 // the existing /api/admin/reset-images endpoint).
 export async function adminUnblock(env, ip) {
-  await env.BOOKINGS.delete(BLOCK_KEY(ip));
-  await env.BOOKINGS.delete(STRIKE_KEY(ip));
+  const normalized = normalizeIp(ip);
+  await env.BOOKINGS.delete(BLOCK_KEY(normalized));
+  await env.BOOKINGS.delete(STRIKE_KEY(normalized));
 }
 
 // ---------------------------------------------------------------------
@@ -481,7 +512,7 @@ const RL_EXEMPT_KEY = (ip) => `sec:rlexempt:${ip}`;
 const RL_EXEMPT_LIST_KEY = "sec:rlexempt:list"; // small index of IPs currently exempt — cheap to render in the admin menu without a KV list() scan
 
 export async function isRateLimitExempt(env, ip) {
-  const raw = await env.BOOKINGS.get(RL_EXEMPT_KEY(ip));
+  const raw = await env.BOOKINGS.get(RL_EXEMPT_KEY(normalizeIp(ip)));
   if (!raw) return null;
   try {
     return JSON.parse(raw);
@@ -519,25 +550,27 @@ async function readExemptIndex(env) {
 export async function setRateLimitExempt(env, ip, phone, note) {
   const digits = String(phone || "").replace(/[^\d]/g, "");
   if (!digits) throw new Error("A phone number is required to exempt an IP from rate limiting.");
-  const record = { ip, phone: digits, note: note ? String(note).slice(0, 200) : "", grantedAt: Date.now() };
+  const normalized = normalizeIp(ip);
+  const record = { ip: normalized, phone: digits, note: note ? String(note).slice(0, 200) : "", grantedAt: Date.now() };
   // No expirationTtl — an admin explicitly turned this on for a named
   // person; it should stay on until they explicitly turn it back off,
   // not silently expire and start throttling someone mid-trip.
-  await env.BOOKINGS.put(RL_EXEMPT_KEY(ip), JSON.stringify(record));
+  await env.BOOKINGS.put(RL_EXEMPT_KEY(normalized), JSON.stringify(record));
   const index = await readExemptIndex(env);
-  if (!index.includes(ip)) {
-    index.push(ip);
+  if (!index.includes(normalized)) {
+    index.push(normalized);
     await env.BOOKINGS.put(RL_EXEMPT_LIST_KEY, JSON.stringify(index));
   }
-  await adminUnblock(env, ip);
+  await adminUnblock(env, normalized);
   return record;
 }
 
 // Turns the rate limit back ON for `ip` (removes the exemption).
 export async function clearRateLimitExempt(env, ip) {
-  await env.BOOKINGS.delete(RL_EXEMPT_KEY(ip));
+  const normalized = normalizeIp(ip);
+  await env.BOOKINGS.delete(RL_EXEMPT_KEY(normalized));
   const index = await readExemptIndex(env);
-  const next = index.filter((x) => x !== ip);
+  const next = index.filter((x) => x !== normalized);
   if (next.length !== index.length) {
     await env.BOOKINGS.put(RL_EXEMPT_LIST_KEY, JSON.stringify(next));
   }

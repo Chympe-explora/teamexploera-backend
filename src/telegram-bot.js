@@ -47,7 +47,7 @@ import {
 import { getAuth, isLocked, lockAccount, tryUnlock, setCustomPassword, setAdminPhone, requestGuideReset, allowGuideReset, generateGuideResetCode, redeemGuideResetCode } from "./auth.js";
 import { isManualModeEnabled, setManualModeEnabled } from "./manual-mode.js";
 import { sendBookingToOne } from "./booking.js";
-import { isRateLimitExempt, setRateLimitExempt, clearRateLimitExempt, listRateLimitExemptions, isBlocked, adminUnblock } from "./security.js";
+import { isRateLimitExempt, setRateLimitExempt, clearRateLimitExempt, listRateLimitExemptions, isBlocked, adminUnblock, normalizeIp } from "./security.js";
 // Same strongly-consistent status source the visitor-facing polling
 // endpoints use (see status-store.js) — keeps the admin bot's view of a
 // booking's status from ever disagreeing with what the visitor sees.
@@ -2397,13 +2397,20 @@ async function handleAwaitedInput(env, chatId, session, msg) {
     }
     const phone = cleaned.replace(/^\+/, "");
     await clearSession(env, chatId);
+    let record;
     try {
-      await setRateLimitExempt(env, awaiting.ip, phone);
+      record = await setRateLimitExempt(env, awaiting.ip, phone);
     } catch (e) {
       await sendRateLimitMenu(env, chatId, `❌ Couldn't save that exemption: ${escapeHtml(e.message || "unknown error")}`);
       return;
     }
-    await sendRateLimitMenu(env, chatId, `✅ Rate limiting turned OFF for <code>${escapeHtml(awaiting.ip)}</code> — tied to +${escapeHtml(phone)}. Any existing block on this IP (e.g. from hitting the limit repeatedly) was also lifted, so they can book/rate again right away. Malware/brute-force/scanner protection still applies to this IP as normal.`);
+    // record.ip (not awaiting.ip) — for an IPv6 address this is the
+    // normalized /64 prefix actually stored (see normalizeIp in
+    // security.js), which is what future requests are matched against.
+    // Mobile carriers commonly rotate the rest of the address, so the
+    // exemption is keyed to that stable prefix, not the exact address
+    // typed in.
+    await sendRateLimitMenu(env, chatId, `✅ Rate limiting turned OFF for <code>${escapeHtml(record.ip)}</code> — tied to +${escapeHtml(phone)}. Any existing block on this IP (e.g. from hitting the limit repeatedly) was also lifted, so they can book/rate again right away. Malware/brute-force/scanner protection still applies to this IP as normal.`);
     return;
   }
 
@@ -2418,14 +2425,19 @@ async function handleAwaitedInput(env, chatId, session, msg) {
       return;
     }
     await clearSession(env, chatId);
+    // Display the normalized /64 (for IPv6) so what's shown matches the
+    // key actually cleared — isBlocked/adminUnblock normalize
+    // internally regardless, this is just so the confirmation message
+    // isn't misleading about what was matched.
+    const normalized = normalizeIp(ip);
     const wasBlocked = await isBlocked(env, ip);
     await adminUnblock(env, ip);
     await sendRateLimitMenu(
       env,
       chatId,
       wasBlocked
-        ? `✅ <code>${escapeHtml(ip)}</code> was blocked — it's unblocked now and can book/rate again.`
-        : `ℹ️ <code>${escapeHtml(ip)}</code> wasn't actually blocked, but its strike count has been cleared anyway.`
+        ? `✅ <code>${escapeHtml(normalized)}</code> was blocked — it's unblocked now and can book/rate again.`
+        : `ℹ️ <code>${escapeHtml(normalized)}</code> wasn't actually blocked, but its strike count has been cleared anyway.`
     );
     return;
   }
