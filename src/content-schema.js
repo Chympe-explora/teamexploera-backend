@@ -19,7 +19,7 @@ export const SCHEMA_DEFAULTS = {
       "whatsappNumber": "916001877518",
       "logoImage": "logo.png",
       "backgroundImage": "Blue watefall.jpg",
-      "instagram": "https://www.instagram.com/unexplored_meghalaya?igsh=ZHZpODB3aXl0bXBu",
+      "instagram": "https://www.instagram.com/team_explo_era?stkn=ZHZpODB3aXl0bXBu",
       "background": {
         "global": {
           "enabled": true,
