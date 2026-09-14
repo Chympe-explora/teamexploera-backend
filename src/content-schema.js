@@ -970,7 +970,7 @@ export const SCHEMA_DEFAULTS = {
       "expJungle": "Trekking.jpg",
       "expSurvival": "Rock formations.jpg",
       "expWaterfall": "Happy waterfall.jpg",
-      "expNight": "Blue water cave.jpg",
+      "expNight": "overnight.jpg",
       "expFood": "",
       "aboutIntro": "Golden Orchid Formation.jpg",
       "aboutGuides": "Cave Ecosystem.jpg",
