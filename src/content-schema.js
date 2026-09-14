@@ -352,7 +352,7 @@ export const SCHEMA_DEFAULTS = {
           },
           {
             "type": "heading",
-            "text": "🌿 The Jungle Experience"
+            "text": "| The Jungle Experience"
           },
           {
             "type": "subheading",
@@ -380,7 +380,7 @@ export const SCHEMA_DEFAULTS = {
           },
           {
             "type": "heading",
-            "text": "🏡 The Homestay Experience"
+            "text": "| The Homestay Experience"
           },
           {
             "type": "subheading",
@@ -404,7 +404,7 @@ export const SCHEMA_DEFAULTS = {
           },
           {
             "type": "heading",
-            "text": "🔥 The Survival Experience"
+            "text": "| The Survival Experience"
           },
           {
             "type": "subheading",
@@ -436,7 +436,7 @@ export const SCHEMA_DEFAULTS = {
           },
           {
             "type": "heading",
-            "text": "🚣 The Water Experience"
+            "text": "| The Water Experience"
           },
           {
             "type": "subheading",
@@ -456,7 +456,7 @@ export const SCHEMA_DEFAULTS = {
           },
           {
             "type": "heading",
-            "text": "✨ The Night Experience"
+            "text": "| The Night Experience"
           },
           {
             "type": "subheading",
@@ -480,7 +480,7 @@ export const SCHEMA_DEFAULTS = {
           },
           {
             "type": "heading",
-            "text": "🍛 The Food Experience"
+            "text": "| The Food Experience"
           },
           {
             "type": "subheading",
@@ -540,27 +540,27 @@ export const SCHEMA_DEFAULTS = {
         "intro": "You've done the research. You've compared the options. Now here's why booking straight through us is the smartest move you'll make.",
         "reasons": [
           {
-            "emoji": "💰",
+            "emoji": "|",
             "title": "Best Price. No Surprises.",
             "description": "No third-party markups. No hidden fees. No \"convenience charges\" that feel anything but convenient. When you book direct, you get the best possible rate—period. What we quote is what you pay."
           },
           {
-            "emoji": "📞",
+            "emoji": "|",
             "title": "Talk to Us. Not a Bot.",
             "description": "Have a question at 2 AM? Worried about your gear? Want to know if you can handle the altitude? When you book through our website, you're talking directly to our local team. People who've walked the trail. People who know the jungle like their own backyard. Not a call center in another time zone."
           },
           {
-            "emoji": "🌿",
+            "emoji": "|",
             "title": "Exclusive Access. Limited Spots.",
             "description": "We keep our groups intentionally small—never more than 8 people. Book direct and you get first pick of departure dates, not the leftovers. Because this experience was never meant to be mass-produced."
           },
           {
-            "emoji": "🔄",
+            "emoji": "|",
             "title": "Book with Confidence. Change with Ease.",
             "description": "Life happens. We get it. That's why we offer free date changes and a flexible cancellation policy when you book direct. No endless forms. No runaround. Just a real person on the other end who actually wants to help."
           },
           {
-            "emoji": "🤝",
+            "emoji": "|",
             "title": "100% Locally-Led. Zero Corporate Overlay.",
             "description": "This isn't a franchise. It's not a global chain with a logo plastered on a jeep. We're a small, local team who lives and breathes this jungle. When you book with us, your money stays here. Your experience is guided by people who call this place home. And your adventure is authentic—not manufactured."
           }
@@ -606,17 +606,50 @@ export const SCHEMA_DEFAULTS = {
             "text": "What We Offer:"
           },
           {
-            "type": "list",
-            "items": [
-              "🏞️ Krem Chympe Falls & Caves – Explore ancient limestone caves carved by water over millennia. Wade through underground streams. Stand beneath waterfalls that few outsiders have ever seen.",
-              "🌿 Wilderness Expedition – Real jungle survival. Not a theme park. Learn to read the forest, build shelter, identify plants, and navigate like the locals do.",
-              "🏡 Homestay Experience – Sleep in our homes. Eat our food. Hear our stories. Not in a hotel. Not in a resort. In the heart of our community.",
-              "🔥 Real Connection – No scripts. No rehearsed performances. Just us, sharing our world with you."
-            ]
-          },
-          {
-            "type": "image",
-            "key": "about_3"
+            {
+  "type": "heading",
+  "text": "🏞️ Krem Chympe Falls & Caves"
+},
+{
+  "type": "paragraph",
+  "text": "Explore ancient limestone caves carved by water over millennia. Wade through underground streams. Stand beneath waterfalls that few outsiders have ever seen."
+},
+{
+  "type": "heading",
+  "text": "🌿 Wilderness Expedition"
+},
+{
+  "type": "paragraph",
+  "text": "Real jungle survival. Not a theme park. Learn to read the forest, build shelter, identify plants, and navigate like the locals do."
+},
+{
+  "type": "image",
+  "key": "about_offer_2"
+},
+{
+  "type": "heading",
+  "text": "🏡 Homestay Experience"
+},
+{
+  "type": "paragraph",
+  "text": "Sleep in our homes. Eat our food. Hear our stories. Not in a hotel. Not in a resort. In the heart of our community."
+},
+{
+  "type": "image",
+  "key": "about_offer_3"
+},
+{
+  "type": "heading",
+  "text": "🔥 Real Connection"
+},
+{
+  "type": "paragraph",
+  "text": "No scripts. No rehearsed performances. Just us, sharing our world with you."
+},
+{
+  "type": "image",
+  "key": "about_3"
+},
           },
           {
             "type": "heading",
@@ -724,6 +757,8 @@ export const SCHEMA_DEFAULTS = {
           "image": "Muddy Jeep Guide.jpg",
           "alt": "Local guides at work"
         },
+        "about_offer_2": { "enabled": true, "image": "Bamboo Jungle Trail.jpg", "alt": "Wilderness Expedition" },
+        "about_offer_3": { "enabled": true, "image": "Camping Deck View.jpg", "alt": "Homestay Experience" },
         "about_3": {
           "enabled": true,
           "image": "Team Waterfall Celebration.jpg",
