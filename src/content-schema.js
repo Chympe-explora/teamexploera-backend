@@ -605,7 +605,6 @@ export const SCHEMA_DEFAULTS = {
             "type": "heading",
             "text": "What We Offer:"
           },
-          {
             {
   "type": "heading",
   "text": "🏞️ Krem Chympe Falls & Caves"
@@ -650,7 +649,6 @@ export const SCHEMA_DEFAULTS = {
   "type": "image",
   "key": "about_3"
 },
-          },
           {
             "type": "heading",
             "text": "Our Promise: Tourism That Gives Back"
