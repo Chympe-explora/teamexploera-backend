@@ -195,12 +195,15 @@ export async function removeGuide(env, guideId) {
 // ASSIGNMENT — called from booking.js's handleSubmit.
 // ---------------------------------------------------------------------
 
-// Picks ONE eligible active guide at random for this site+package, or
-// null if none exist (caller falls back to the admin group as the
-// actionable recipient in that case).
-export async function pickGuideForBooking(env, site, packageKey) {
+// Returns EVERY eligible active guide for this site+package (empty array
+// if none exist — caller falls back to the admin group as the
+// actionable recipient in that case). Used to fan the booking's
+// Confirm/Reject message out to every available guide at once, so
+// whichever of them taps Confirm first is the one who gets it — see
+// booking.js's handleSubmit / handleBookingCallback.
+export async function getEligibleGuides(env, site, packageKey) {
   const guides = await getGuides(env);
-  const eligible = guides.filter(
+  return guides.filter(
     (g) =>
       g.site === site &&
       g.chatId && // code must actually be redeemed
@@ -208,6 +211,14 @@ export async function pickGuideForBooking(env, site, packageKey) {
       g.bookingAccess !== false &&
       (!packageKey || g.services.includes("all") || g.services.includes(packageKey))
   );
+}
+
+// Picks ONE eligible active guide at random for this site+package, or
+// null if none exist. Kept for any other caller that still wants
+// single-guide random assignment; booking.js's normal submit flow now
+// uses getEligibleGuides above instead, so it can notify all of them.
+export async function pickGuideForBooking(env, site, packageKey) {
+  const eligible = await getEligibleGuides(env, site, packageKey);
   if (eligible.length === 0) return null;
   return eligible[Math.floor(Math.random() * eligible.length)];
 }

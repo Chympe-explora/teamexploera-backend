@@ -47,6 +47,7 @@ import {
 import { getAuth, isLocked, lockAccount, tryUnlock, setCustomPassword, setAdminPhone, requestGuideReset, allowGuideReset, generateGuideResetCode, redeemGuideResetCode } from "./auth.js";
 import { isManualModeEnabled, setManualModeEnabled } from "./manual-mode.js";
 import { sendBookingToOne } from "./booking.js";
+import { isRateLimitExempt, setRateLimitExempt, clearRateLimitExempt, listRateLimitExemptions } from "./security.js";
 // Same strongly-consistent status source the visitor-facing polling
 // endpoints use (see status-store.js) — keeps the admin bot's view of a
 // booking's status from ever disagreeing with what the visitor sees.
@@ -380,6 +381,9 @@ async function sendMainMenu(env, chatId, note) {
   const securityRow = [btn("🔑 Login & Security", "adminsecurity")];
   if (adminAuth && adminAuth.password) securityRow.push(btn("🔒 Log Out", "adminlogout"));
   rows.push(securityRow);
+
+  // ---- 🚦 per-IP rate-limit on/off — see security.js ----
+  rows.push([btn("🚦 Rate Limit by IP", "ratelimitmenu")]);
   rows.push([helpButton("mainmenu", "❓ Help")]);
 
   // Openly reminding the ADMIN of the default-password rule is fine —
@@ -414,6 +418,37 @@ async function sendAdminSecurityMenu(env, chatId, userId) {
   if (auth && auth.password) rows.push([btn("🔒 Log Out", "adminlogout")]);
   rows.push([btn("⬅️ Back", "home")]);
   await tgSendMessage(env, chatId, `🔑 <b>Login & Security</b>\n\n${phoneLine}\n${pwLine}`, { reply_markup: kb(rows) });
+}
+
+// ---------------- 🚦 PER-IP RATE LIMIT ON/OFF (see security.js) ----------------
+//
+// Rate limiting protects the site from malware, brute-force, and other
+// scripted abuse — this menu is a narrow, deliberate escape hatch from
+// it for one specific, genuine visitor's IP (e.g. a guide's office wifi
+// several people book from, or a visitor whose connection keeps
+// retrying). It never touches the blocklist or attack-pattern checks —
+// see security.js's securityGate — and it can only be turned ON with a
+// real phone number attached, so every exemption is tied to someone
+// identifiable, never a bare "trust this IP forever".
+
+async function sendRateLimitMenu(env, chatId, note) {
+  const exemptions = await listRateLimitExemptions(env);
+  const rows = exemptions.map((r) => [btn(`🔴 Turn rate limit back ON — ${r.ip}`, `rlclear:${r.ip}`)]);
+  rows.push([btn("➕ Turn Rate Limit OFF for an IP", "rlnew")]);
+  rows.push([btn("⬅️ Back", "home")]);
+
+  const list = exemptions.length
+    ? exemptions
+        .map((r) => `• <code>${escapeHtml(r.ip)}</code> — +${escapeHtml(r.phone)}${r.note ? ` (${escapeHtml(r.note)})` : ""}`)
+        .join("\n")
+    : "<i>No IPs are currently exempt — every visitor is rate-limited normally.</i>";
+
+  const text =
+    (note ? note + "\n\n" : "") +
+    `🚦 <b>Rate Limit by IP</b>\n\n` +
+    `Turning this OFF for an IP only lifts its request-count cap — the malware/brute-force/scanner defenses (blocklist + attack-pattern detection) still apply to it. Every exemption requires a real phone number, so it's always tied to a person you can identify, never an anonymous IP.\n\n` +
+    `<b>Currently exempt:</b>\n${list}`;
+  await tgSendMessage(env, chatId, text, { reply_markup: kb(rows) });
 }
 
 // ---------------- GUIDE MANAGEMENT (admin side) ----------------
@@ -845,12 +880,23 @@ async function handleBookingCodeLookup(env, chatId, bookingId) {
 
   const status = await getStatus(env, bookingId);
 
+  // Which guide(s) does this booking involve? Once someone has
+  // confirmed it, assignedGuideId names them specifically. While still
+  // pending, it may have been fanned out to several guides at once (see
+  // booking.js#getEligibleGuides) — list all of them, since there's no
+  // single "the" guide yet.
   let guideLine = "🧑\u200d🤝\u200d🧑 <b>Assigned to:</b> Admin group (no guide was assigned)";
   if (booking.assignedGuideId) {
     const guide = await getGuide(env, booking.assignedGuideId);
     guideLine = guide
-      ? `🧑\u200d🤝\u200d🧑 <b>Assigned to:</b> ${escapeHtml(guide.name)}${guide.chatId ? "" : " (not currently linked to Telegram)"}${guide.phone ? ` — +${escapeHtml(guide.phone)}` : ""}`
-      : `🧑\u200d🤝\u200d🧑 <b>Assigned to:</b> a guide who has since been removed`;
+      ? `🧑\u200d🤝\u200d🧑 <b>Confirmed by:</b> ${escapeHtml(guide.name)}${guide.chatId ? "" : " (not currently linked to Telegram)"}${guide.phone ? ` — +${escapeHtml(guide.phone)}` : ""}`
+      : `🧑\u200d🤝\u200d🧑 <b>Confirmed by:</b> a guide who has since been removed`;
+  } else if (Array.isArray(booking.eligibleGuideIds) && booking.eligibleGuideIds.length) {
+    const guides = await Promise.all(booking.eligibleGuideIds.map((id) => getGuide(env, id)));
+    const names = guides.filter(Boolean).map((g) => escapeHtml(g.name));
+    guideLine = names.length
+      ? `🧑\u200d🤝\u200d🧑 <b>Sent to:</b> ${names.join(", ")} — whoever confirms first gets it.`
+      : "🧑\u200d🤝\u200d🧑 <b>Sent to:</b> guide(s) who have since been removed";
   }
 
   const detailsText = booking.data && booking.data.message ? escapeHtml(booking.data.message) : fmtBookingData(booking.data);
@@ -860,7 +906,35 @@ async function handleBookingCodeLookup(env, chatId, bookingId) {
     `${guideLine}\n` +
     `Status: ${statusEmoji(status)} ${escapeHtml(status)}\n\n` +
     `${detailsText}`;
-  await tgSendMessage(env, chatId, text);
+
+  // Still pending? Give the admin the same Confirm/Reject buttons every
+  // guide's own copy has, right here — so a visitor stuck on the "Still
+  // Waiting On Your Guide" screen can be resolved on the spot, without
+  // the admin needing to go find the original message in some guide's
+  // chat. This message's id is appended to the booking's tracked
+  // message refs so, whichever button gets tapped (here or on a
+  // guide's own copy), every copy — including this one — gets updated
+  // to match, exactly like the normal multi-guide race in
+  // booking.js#handleBookingCallback.
+  const replyMarkup =
+    status === "pending"
+      ? { inline_keyboard: [[{ text: "✅ Confirm", callback_data: `confirm:${bookingId}` }, { text: "❌ Reject", callback_data: `cancel:${bookingId}` }]] }
+      : undefined;
+  const res = await tgSendMessage(env, chatId, text, replyMarkup ? { reply_markup: replyMarkup } : undefined);
+  if (status === "pending" && res && res.ok && res.result && res.result.message_id) {
+    const msgRefsRaw = await env.BOOKINGS.get(`bookingmsg:${bookingId}`);
+    let msgRefs = [];
+    if (msgRefsRaw) {
+      try {
+        const parsed = JSON.parse(msgRefsRaw);
+        msgRefs = Array.isArray(parsed) ? parsed : [{ chatId: env.TELEGRAM_CHAT_ID, messageId: parsed }];
+      } catch (e) {
+        msgRefs = [];
+      }
+    }
+    msgRefs.push({ chatId, messageId: res.result.message_id });
+    await env.BOOKINGS.put(`bookingmsg:${bookingId}`, JSON.stringify(msgRefs), { expirationTtl: 60 * 60 * 24 * 30 });
+  }
 
   if (booking.receipt && booking.receipt.fileId) {
     if (booking.receipt.isImage) {
@@ -1372,6 +1446,26 @@ async function handleCallback(env, chatId, messageId, data, userId) {
         ? "📵 <b>Manual WhatsApp Mode turned ON.</b> New bookings will post straight to this group only (no guide assignment) — the visitor is also sent to WhatsApp with a code as a backup."
         : "✅ <b>Manual WhatsApp Mode turned OFF.</b> Bookings go back to normal guide assignment, and live status tracking is back on for visitors."
     );
+  }
+
+  // ---- 🚦 per-IP rate-limit on/off — see security.js ----
+  if (action === "ratelimitmenu") return sendRateLimitMenu(env, chatId);
+
+  if (action === "rlnew") {
+    await setSession(env, chatId, { awaiting: { type: "rlip" } });
+    await tgSendMessage(
+      env,
+      chatId,
+      `🚦 Send the IP address to turn rate limiting OFF for (e.g. <code>203.0.113.45</code>). You can find a visitor's IP from a 🚨 Security alert message, or ask them directly.`,
+      { reply_markup: kb([[btn("❌ Cancel", "ratelimitmenu")]]) }
+    );
+    return;
+  }
+
+  if (action === "rlclear") {
+    const ip = rest.join(":");
+    await clearRateLimitExempt(env, ip);
+    return sendRateLimitMenu(env, chatId, `✅ Rate limiting is back ON for <code>${escapeHtml(ip)}</code>.`);
   }
 
   if (action === "stats") return sendStatsMenu(env, chatId);
@@ -2230,6 +2324,49 @@ async function handleAwaitedInput(env, chatId, session, msg) {
     await tgSendMessage(env, chatId, `✅ Saved! Once you confirm a booking, the visitor will see a button to message you directly at +${escapeHtml(phone)} on WhatsApp.`);
     const updated = await getGuide(env, guide.id);
     await sendGuideMenu(env, chatId, updated);
+    return;
+  }
+
+  // ---- 🚦 per-IP rate-limit on/off — see security.js ----
+  if (awaiting.type === "rlip") {
+    const ip = (msg.text ?? "").trim();
+    // Loose IPv4/IPv6 shape check — good enough to catch typos without
+    // rejecting anything Cloudflare's cf-connecting-ip header could
+    // actually send.
+    if (!/^[0-9a-fA-F:.]{3,45}$/.test(ip)) {
+      await tgSendMessage(env, chatId, `That doesn't look like a valid IP address. Send just the address, e.g. <code>203.0.113.45</code>, or tap Cancel.`, {
+        reply_markup: kb([[btn("❌ Cancel", "ratelimitmenu")]]),
+      });
+      return;
+    }
+    await setSession(env, chatId, { awaiting: { type: "rlphone", ip } });
+    await tgSendMessage(
+      env,
+      chatId,
+      `📱 Now send the phone number of the person behind <code>${escapeHtml(ip)}</code> (with country code, e.g. <code>+919876543210</code>) — this is what ties the exemption to a real, identifiable visitor.`,
+      { reply_markup: kb([[btn("❌ Cancel", "ratelimitmenu")]]) }
+    );
+    return;
+  }
+
+  if (awaiting.type === "rlphone") {
+    const raw = (msg.text ?? "").trim();
+    const cleaned = raw.replace(/[^\d+]/g, "");
+    if (!/^\+?\d{7,15}$/.test(cleaned)) {
+      await tgSendMessage(env, chatId, `That doesn't look like a valid number. Send it with country code, e.g. <code>+919876543210</code>, or tap Cancel.`, {
+        reply_markup: kb([[btn("❌ Cancel", "ratelimitmenu")]]),
+      });
+      return;
+    }
+    const phone = cleaned.replace(/^\+/, "");
+    await clearSession(env, chatId);
+    try {
+      await setRateLimitExempt(env, awaiting.ip, phone);
+    } catch (e) {
+      await sendRateLimitMenu(env, chatId, `❌ Couldn't save that exemption: ${escapeHtml(e.message || "unknown error")}`);
+      return;
+    }
+    await sendRateLimitMenu(env, chatId, `✅ Rate limiting turned OFF for <code>${escapeHtml(awaiting.ip)}</code> — tied to +${escapeHtml(phone)}. Malware/brute-force/scanner protection still applies to this IP as normal.`);
     return;
   }
 

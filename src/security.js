@@ -405,13 +405,24 @@ export async function securityGate(request, env, ctx) {
   // /api/submit at 8 per 5 minutes. If you're on Workers Paid (10M
   // writes/day), feel free to re-add the global check — see git
   // history for the old code.)
-  const [limit, windowSeconds] = limitFor(url.pathname);
-  const underRoute = await rateLimit(env, url.pathname, ip, limit, windowSeconds);
-  if (!underRoute) {
-    const r = await addStrikes(env, ip, 1, `rate limit on ${url.pathname}`);
-    await alertOnce(env, ctx, ip, "ratelimit-route", "Rate limit exceeded", `path: ${url.pathname}`, 900);
-    if (r.blocked) await alertOnce(env, ctx, ip, "blocked", "IP auto-blocked", `reason: repeated rate-limit violations (24h block)`, 900);
-    return json429();
+  //
+  // An IP an admin has explicitly exempted (see setRateLimitExempt —
+  // requires a real phone number attached, so it's always tied to an
+  // identified person, never a bare "trust this IP") skips ONLY this
+  // step. Steps 1–3 above (blocklist, body-size guard, attack-pattern
+  // detection) still run for it exactly as normal — an exemption lifts
+  // the request-count cap for a genuine, busy visitor, it never opens a
+  // hole for malware, brute-force tools, or scanners.
+  const exemption = await isRateLimitExempt(env, ip);
+  if (!exemption) {
+    const [limit, windowSeconds] = limitFor(url.pathname);
+    const underRoute = await rateLimit(env, url.pathname, ip, limit, windowSeconds);
+    if (!underRoute) {
+      const r = await addStrikes(env, ip, 1, `rate limit on ${url.pathname}`);
+      await alertOnce(env, ctx, ip, "ratelimit-route", "Rate limit exceeded", `path: ${url.pathname}`, 900);
+      if (r.blocked) await alertOnce(env, ctx, ip, "blocked", "IP auto-blocked", `reason: repeated rate-limit violations (24h block)`, 900);
+      return json429();
+    }
   }
 
   return null; // clean — proceed to normal routing
@@ -453,4 +464,77 @@ export function honeypotTripped(data) {
 export async function adminUnblock(env, ip) {
   await env.BOOKINGS.delete(BLOCK_KEY(ip));
   await env.BOOKINGS.delete(STRIKE_KEY(ip));
+}
+
+// ---------------------------------------------------------------------
+// PER-IP RATE-LIMIT EXEMPTION — the "🚦 Rate Limit" on/off admin
+// control (see telegram-bot.js's sendRateLimitMenu). Deliberately
+// narrower than the ADMIN_IPS / x-admin-secret bypass above: an
+// exempted IP still goes through the blocklist, body-size guard, and
+// attack-pattern checks in securityGate — it only skips step 4 (the
+// per-route request-count cap). And it can only ever be turned on with
+// a real phone number attached, so "who is this" is always answerable
+// — never a bare IP an admin trusted on a whim.
+// ---------------------------------------------------------------------
+
+const RL_EXEMPT_KEY = (ip) => `sec:rlexempt:${ip}`;
+const RL_EXEMPT_LIST_KEY = "sec:rlexempt:list"; // small index of IPs currently exempt — cheap to render in the admin menu without a KV list() scan
+
+export async function isRateLimitExempt(env, ip) {
+  const raw = await env.BOOKINGS.get(RL_EXEMPT_KEY(ip));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function readExemptIndex(env) {
+  const raw = await env.BOOKINGS.get(RL_EXEMPT_LIST_KEY);
+  if (!raw) return [];
+  try {
+    const list = JSON.parse(raw);
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+// Turns the rate limit OFF for `ip`. `phone` (digits, with country
+// code) is required — this is what makes the exemption a real,
+// identifiable person rather than an anonymous carve-out, e.g. so the
+// admin can call/WhatsApp them if that IP later starts misbehaving.
+export async function setRateLimitExempt(env, ip, phone, note) {
+  const digits = String(phone || "").replace(/[^\d]/g, "");
+  if (!digits) throw new Error("A phone number is required to exempt an IP from rate limiting.");
+  const record = { ip, phone: digits, note: note ? String(note).slice(0, 200) : "", grantedAt: Date.now() };
+  // No expirationTtl — an admin explicitly turned this on for a named
+  // person; it should stay on until they explicitly turn it back off,
+  // not silently expire and start throttling someone mid-trip.
+  await env.BOOKINGS.put(RL_EXEMPT_KEY(ip), JSON.stringify(record));
+  const index = await readExemptIndex(env);
+  if (!index.includes(ip)) {
+    index.push(ip);
+    await env.BOOKINGS.put(RL_EXEMPT_LIST_KEY, JSON.stringify(index));
+  }
+  return record;
+}
+
+// Turns the rate limit back ON for `ip` (removes the exemption).
+export async function clearRateLimitExempt(env, ip) {
+  await env.BOOKINGS.delete(RL_EXEMPT_KEY(ip));
+  const index = await readExemptIndex(env);
+  const next = index.filter((x) => x !== ip);
+  if (next.length !== index.length) {
+    await env.BOOKINGS.put(RL_EXEMPT_LIST_KEY, JSON.stringify(next));
+  }
+}
+
+// Every currently-exempt IP with its attached identifying details —
+// for the admin menu list view.
+export async function listRateLimitExemptions(env) {
+  const index = await readExemptIndex(env);
+  const records = await Promise.all(index.map((ip) => isRateLimitExempt(env, ip)));
+  return records.filter(Boolean);
 }

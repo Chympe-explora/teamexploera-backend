@@ -31,7 +31,7 @@
 
 import { bumpVisitors, bumpBookings } from "./stats.js";
 import { isSessionActive, isSessionBlocked, toggleSessionBlocked } from "./conversations.js";
-import { pickGuideForBooking, assignBookingToGuide, getGuide } from "./guides.js";
+import { getEligibleGuides, assignBookingToGuide, getGuide, getGuideByChatId } from "./guides.js";
 // Booking/refund status reads+writes go through status-store.js, NOT
 // straight to KV — see that file's header comment for why (KV's
 // eventual consistency was the cause of "confirm sometimes doesn't show
@@ -409,41 +409,50 @@ export async function handleSubmit(request, env, ctx) {
   const activeElsewhere = sessionId ? await isSessionActive(env, sessionId) : false;
 
   // ---- who gets the actionable message? ----
-  // Package-based random assignment (see guides.js): if there's at
-  // least one active, booking-access-enabled, linked guide who covers
-  // this site + package, ONE of them is chosen at random and gets the
-  // actionable Confirm/Reject message. The admin group still gets a
-  // copy, but purely informational (no buttons) — it's told who has
-  // it, nothing more. If no eligible guide exists, the group falls
-  // back to being the actionable recipient, exactly like before guides
-  // existed at all. Guides can receive unlimited bookings — there's no
-  // per-guide cap here by design.
+  // Package-based fan-out (see guides.js#getEligibleGuides): EVERY
+  // active, booking-access-enabled, linked guide who covers this site +
+  // package gets the SAME actionable Confirm/Reject message, all at
+  // once — whichever of them taps Confirm first is the one who keeps
+  // it (see handleBookingCallback below, which settles the race). The
+  // admin group still gets a copy, but purely informational (no
+  // buttons) — it's told who was notified, nothing more. If no
+  // eligible guide exists, the group falls back to being the
+  // actionable recipient, exactly like before guides existed at all.
   //
   // 📵 Manual WhatsApp Mode always skips this entirely — group only,
   // never a guide — regardless of whether an eligible guide exists.
   const packageKey = data && data.packageKey;
-  const assignedGuide = manualMode ? null : siteId ? await pickGuideForBooking(env, siteId, packageKey) : null;
+  const eligibleGuides = manualMode ? [] : siteId ? await getEligibleGuides(env, siteId, packageKey) : [];
 
-  if (!assignedGuide && !env.TELEGRAM_CHAT_ID) {
+  if (!eligibleGuides.length && !env.TELEGRAM_CHAT_ID) {
     return json({ ok: false, error: "No Telegram chat is configured to receive bookings." }, env, 502);
   }
 
-  let primaryRes;
+  let sendResults = [];
   let groupInfoText = null;
-  if (assignedGuide) {
-    primaryRes = await sendBookingToOne(env, assignedGuide.chatId, text, actionableMarkup, receipt, activeElsewhere);
-    groupInfoText = `\u2139\ufe0f <b>New booking</b> — assigned to <b>${escapeHtml(assignedGuide.name)}</b> for confirmation.\n\n${text}`;
+  if (eligibleGuides.length) {
+    sendResults = await Promise.all(
+      eligibleGuides.map((g) => sendBookingToOne(env, g.chatId, text, actionableMarkup, receipt, activeElsewhere))
+    );
+    const names = eligibleGuides.map((g) => escapeHtml(g.name)).join(", ");
+    groupInfoText =
+      eligibleGuides.length === 1
+        ? `\u2139\ufe0f <b>New booking</b> — sent to <b>${names}</b> for confirmation.\n\n${text}`
+        : `\u2139\ufe0f <b>New booking</b> — sent to ${eligibleGuides.length} available guides (${names}); whoever confirms first gets it.\n\n${text}`;
   } else {
-    primaryRes = await sendBookingToOne(env, env.TELEGRAM_CHAT_ID, text, actionableMarkup, receipt, activeElsewhere);
+    sendResults = [await sendBookingToOne(env, env.TELEGRAM_CHAT_ID, text, actionableMarkup, receipt, activeElsewhere)];
   }
 
+  const anyOk = sendResults.some((r) => r && r.ok);
+
   // IMPORTANT: only report success to the visitor's browser if the
-  // booking message actually reached Telegram. Previously this always
-  // returned { ok: true }, even when the send failed (bad/missing bot
-  // token, wrong chat id, bot never started, etc.) — so a visitor could
-  // "successfully" submit a booking that nobody ever saw, with no error
-  // anywhere. Now a failed send is reported back as an error so it can
-  // be surfaced in the UI instead of disappearing silently.
+  // booking message actually reached at least one recipient on
+  // Telegram. Previously this always returned { ok: true }, even when
+  // the send failed (bad/missing bot token, wrong chat id, bot never
+  // started, etc.) — so a visitor could "successfully" submit a
+  // booking that nobody ever saw, with no error anywhere. Now a
+  // total-failure send is reported back as an error so it can be
+  // surfaced in the UI instead of disappearing silently.
   //
   // 📵 Manual WhatsApp Mode gets ONE extra fallback here: if the group
   // send itself fails (bad token, bot never started in the group, etc.)
@@ -451,7 +460,7 @@ export async function handleSubmit(request, env, ctx) {
   // isn't lost. The visitor still gets `manualMode: true` (WhatsApp is
   // their real record of it either way), and the admin can recover it
   // later by pasting its code into the bot, which posts it then instead.
-  if (!primaryRes.ok) {
+  if (!anyOk) {
     if (manualMode) {
       await setStatus(env, bookingId, "awaiting_admin");
       await env.BOOKINGS.put(
@@ -465,13 +474,19 @@ export async function handleSubmit(request, env, ctx) {
       }
       return json({ ok: true, bookingId, manualMode: true }, env);
     }
-    return json({ ok: false, error: primaryRes.description || "telegram send failed" }, env, 502);
+    const firstError = sendResults.find((r) => r && r.description);
+    return json({ ok: false, error: (firstError && firstError.description) || "telegram send failed" }, env, 502);
   }
 
   const messageRefs = [];
-  const actionableChatId = assignedGuide ? assignedGuide.chatId : env.TELEGRAM_CHAT_ID;
-  if (primaryRes.result && primaryRes.result.message_id) {
-    messageRefs.push({ chatId: actionableChatId, messageId: primaryRes.result.message_id });
+  if (eligibleGuides.length) {
+    sendResults.forEach((res, i) => {
+      if (res && res.ok && res.result && res.result.message_id) {
+        messageRefs.push({ chatId: eligibleGuides[i].chatId, messageId: res.result.message_id });
+      }
+    });
+  } else if (sendResults[0] && sendResults[0].ok && sendResults[0].result && sendResults[0].result.message_id) {
+    messageRefs.push({ chatId: env.TELEGRAM_CHAT_ID, messageId: sendResults[0].result.message_id });
   }
 
   // SPEED + reliability: the visitor already has everything they need
@@ -479,13 +494,13 @@ export async function handleSubmit(request, env, ctx) {
   // bookkeeping needs to finish before responding. Deferred via
   // ctx.waitUntil when available.
   async function sendInfoAndPersist() {
-    if (assignedGuide && env.TELEGRAM_CHAT_ID && groupInfoText) {
+    if (eligibleGuides.length && env.TELEGRAM_CHAT_ID && groupInfoText) {
       // Informational only — no reply_markup at all, per spec: the
-      // group never gets actionable buttons once a guide is handling it.
+      // group never gets actionable buttons once guides are handling it.
       await sendBookingToOne(env, env.TELEGRAM_CHAT_ID, groupInfoText, null, receipt, true).catch(() => {});
     }
-    if (assignedGuide) {
-      await assignBookingToGuide(env, assignedGuide.id, bookingId);
+    for (const g of eligibleGuides) {
+      await assignBookingToGuide(env, g.id, bookingId);
     }
 
     await setStatus(env, bookingId, "pending");
@@ -495,9 +510,26 @@ export async function handleSubmit(request, env, ctx) {
     // up this booking by its code later (see handleBookingCodeLookup in
     // telegram-bot.js) and still get the receipt re-sent, even long
     // after the visitor's session-scoped cache entry has expired.
+    //
+    // assignedGuideId starts null even when guides were notified — it's
+    // only set once someone actually confirms (see
+    // handleBookingCallback), since with multiple guides notified at
+    // once there's no single "the" guide until one of them wins the
+    // race. eligibleGuideIds records who was in the race at all, so a
+    // reject from one of several notified guides can be told apart from
+    // a reject when there was only ever one recipient (see
+    // handleBookingCallback).
     await env.BOOKINGS.put(
       `booking:${bookingId}`,
-      JSON.stringify({ sessionId, siteId, data, assignedGuideId: assignedGuide ? assignedGuide.id : null, receipt: receipt || null }),
+      JSON.stringify({
+        sessionId,
+        siteId,
+        data,
+        assignedGuideId: null,
+        eligibleGuideIds: eligibleGuides.map((g) => g.id),
+        declinedGuideIds: [],
+        receipt: receipt || null,
+      }),
       { expirationTtl: 60 * 60 * 24 * 30 }
     );
     if (messageRefs.length) {
@@ -556,12 +588,103 @@ export async function handleStatusCheck(bookingId, env) {
   return json({ status, guideName, guidePhone }, env);
 }
 
+// Edits ONE Telegram copy of a booking message (text or media-caption)
+// to show a final badge and clears its buttons. Shared by the
+// full-settle path below (every recipient, once a booking is truly
+// decided) and the single-message paths in handleBookingCallback (a
+// race loser tapping a button after someone else already won, or one
+// guide declining while others are still in the running).
+async function stampBookingMessage(env, chatId, messageId, cb, badgeHtml) {
+  try {
+    const isMedia = !!(cb.message && (cb.message.photo || cb.message.document));
+    const originalCaption = (cb.message && cb.message.caption) || "";
+    const originalText = (cb.message && cb.message.text) || "";
+    if (isMedia) {
+      await tgEditMessageCaption(env, chatId, Number(messageId), `${originalCaption}\n\n<b>${badgeHtml}</b>`);
+    } else {
+      await tg(env, "editMessageText", {
+        chat_id: chatId,
+        message_id: Number(messageId),
+        parse_mode: "HTML",
+        text: `${originalText}\n\n<b>${badgeHtml}</b>`,
+      });
+    }
+    await tg(env, "editMessageReplyMarkup", { chat_id: chatId, message_id: Number(messageId), reply_markup: { inline_keyboard: [] } }).catch(() => {});
+  } catch (e) {
+    // One recipient's copy failing to edit (they deleted their chat
+    // with the bot, blocked it, etc.) shouldn't break anything else.
+  }
+}
+
+// Reads the {chatId, messageId}[] this booking's actionable message(s)
+// were sent as — one entry per eligible guide it was fanned out to, or
+// a single group entry when no guide was eligible.
+async function getBookingMsgRefs(env, bookingId) {
+  const msgRefsRaw = await env.BOOKINGS.get(`bookingmsg:${bookingId}`);
+  if (!msgRefsRaw) return [];
+  try {
+    const parsed = JSON.parse(msgRefsRaw);
+    // Back-compat: bookings created before guide fan-out existed stored
+    // a single numeric message_id string (always in the main group),
+    // not an array of {chatId, messageId}.
+    return Array.isArray(parsed) ? parsed : [{ chatId: env.TELEGRAM_CHAT_ID, messageId: parsed }];
+  } catch (e) {
+    return [{ chatId: env.TELEGRAM_CHAT_ID, messageId: Number(msgRefsRaw) }];
+  }
+}
+
 export async function handleBookingCallback(cb, env) {
   if (!cb || !cb.data) return;
 
   const [action, bookingId] = cb.data.split(":");
   if ((action === "confirm" || action === "cancel") && bookingId) {
     const newStatus = action === "confirm" ? "confirmed" : "cancelled";
+    const currentStatus = await getStatus(env, bookingId);
+
+    // Multi-guide race, already lost: another guide (or the admin, via
+    // a code-lookup Confirm/Reject) already settled this booking before
+    // this tap landed. Just tell them and refresh THEIR copy to match
+    // the real outcome — every other copy was already updated by
+    // whoever settled it, so there's nothing left to do here.
+    if (currentStatus && currentStatus !== "pending") {
+      tg(env, "answerCallbackQuery", {
+        callback_query_id: cb.id,
+        text: currentStatus === "confirmed" ? "Already confirmed — another guide got there first." : "This booking was already settled.",
+        show_alert: true,
+      }).catch(() => {});
+      if (cb.message) {
+        const badge = currentStatus === "confirmed" ? "\u2705 Already confirmed by another guide" : "\u274c Already settled";
+        await stampBookingMessage(env, cb.message.chat.id, cb.message.message_id, cb, badge);
+      }
+      return;
+    }
+
+    // A REJECT only settles the booking once EVERY guide it was fanned
+    // out to has rejected — one guide declining shouldn't cancel a
+    // booking the others haven't even responded to yet. A CONFIRM is
+    // always final (first one in wins), so this only branches for
+    // "cancel", and only when there was more than one guide in the race.
+    if (action === "cancel") {
+      const bookingRaw = await env.BOOKINGS.get(`booking:${bookingId}`);
+      const booking = bookingRaw ? JSON.parse(bookingRaw) : null;
+      if (booking && Array.isArray(booking.eligibleGuideIds) && booking.eligibleGuideIds.length > 1 && cb.message) {
+        const decliner = await getGuideByChatId(env, cb.message.chat.id);
+        const declinedSoFar = new Set(booking.declinedGuideIds || []);
+        if (decliner) declinedSoFar.add(decliner.id);
+        const allDeclined = booking.eligibleGuideIds.every((id) => declinedSoFar.has(id));
+        if (!allDeclined) {
+          booking.declinedGuideIds = Array.from(declinedSoFar);
+          await env.BOOKINGS.put(`booking:${bookingId}`, JSON.stringify(booking), { expirationTtl: 60 * 60 * 24 * 30 });
+          tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: "You declined — still waiting on the other guide(s)." }).catch(() => {});
+          await stampBookingMessage(env, cb.message.chat.id, cb.message.message_id, cb, "\u274c You declined this one");
+          return; // booking stays pending — the others can still confirm it
+        }
+        // Every eligible guide has now declined — fall through and
+        // settle the booking as rejected, same as a single-guide reject.
+      }
+    }
+
+    // ---- settle the booking (confirm, or a reject nobody's left to override) ----
 
     // Flip the status FIRST, before touching the Telegram message. The
     // visitor's browser is polling /api/status every ~1.5s — the instant
@@ -572,25 +695,30 @@ export async function handleBookingCallback(cb, env) {
     // write lands" is actually true everywhere, immediately — see that
     // file's header comment.
     await setStatus(env, bookingId, newStatus);
-    if (newStatus === "confirmed") await bumpBookings(env).catch(() => {});
+    if (newStatus === "confirmed") {
+      await bumpBookings(env).catch(() => {});
+      // Record WHICH guide actually confirmed it (when the tap came
+      // from a guide's own chat, not the admin group or a code-lookup)
+      // so the visitor's "Message Your Guide" button goes straight to
+      // them — see handleStatusCheck above, which reads this back.
+      if (cb.message) {
+        const confirmingGuide = await getGuideByChatId(env, cb.message.chat.id);
+        if (confirmingGuide) {
+          const bookingRaw = await env.BOOKINGS.get(`booking:${bookingId}`);
+          if (bookingRaw) {
+            const booking = JSON.parse(bookingRaw);
+            booking.assignedGuideId = confirmingGuide.id;
+            await env.BOOKINGS.put(`booking:${bookingId}`, JSON.stringify(booking), { expirationTtl: 60 * 60 * 24 * 30 });
+          }
+        }
+      }
+    }
 
     // Answer the callback immediately too, so the guide's own Telegram
     // button stops "spinning" right away instead of waiting on the edit.
     tg(env, "answerCallbackQuery", { callback_query_id: cb.id, text: `Marked ${newStatus}` }).catch(() => {});
 
-    const msgRefsRaw = await env.BOOKINGS.get(`bookingmsg:${bookingId}`);
-    let msgRefs = [];
-    if (msgRefsRaw) {
-      try {
-        const parsed = JSON.parse(msgRefsRaw);
-        // Back-compat: bookings created before guide fan-out existed
-        // stored a single numeric message_id string (always in the
-        // main group), not an array of {chatId, messageId}.
-        msgRefs = Array.isArray(parsed) ? parsed : [{ chatId: env.TELEGRAM_CHAT_ID, messageId: parsed }];
-      } catch (e) {
-        msgRefs = [{ chatId: env.TELEGRAM_CHAT_ID, messageId: Number(msgRefsRaw) }];
-      }
-    }
+    const msgRefs = await getBookingMsgRefs(env, bookingId);
 
     // Every recipient's copy (the main group AND every guide's personal
     // DM — see recipientChatIds/sendBookingToOne above) gets the same
@@ -600,31 +728,7 @@ export async function handleBookingCallback(cb, env) {
     // different chat.
     if (msgRefs.length && cb.message) {
       const badge = newStatus === "confirmed" ? "\u2705 CONFIRMED" : "\u274c REJECTED";
-      const isMedia = !!(cb.message.photo || cb.message.document);
-      const originalCaption = cb.message.caption || "";
-      const originalText = cb.message.text || "";
-
-      await Promise.all(
-        msgRefs.map(async (ref) => {
-          try {
-            if (isMedia) {
-              await tgEditMessageCaption(env, ref.chatId, Number(ref.messageId), `${originalCaption}\n\n<b>${badge}</b>`);
-            } else {
-              await tg(env, "editMessageText", {
-                chat_id: ref.chatId,
-                message_id: Number(ref.messageId),
-                parse_mode: "HTML",
-                text: `${originalText}\n\n<b>${badge}</b>`,
-              });
-            }
-            await tg(env, "editMessageReplyMarkup", { chat_id: ref.chatId, message_id: Number(ref.messageId), reply_markup: { inline_keyboard: [] } }).catch(() => {});
-          } catch (e) {
-            // One recipient's copy failing to edit (they deleted their
-            // chat with the bot, blocked it, etc.) shouldn't stop the
-            // others from updating.
-          }
-        })
-      );
+      await Promise.all(msgRefs.map((ref) => stampBookingMessage(env, ref.chatId, ref.messageId, cb, badge)));
     }
 
     // A rejected booking frees up that visitor's "one pending booking"
