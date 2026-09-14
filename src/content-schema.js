@@ -769,7 +769,7 @@ export const SCHEMA_DEFAULTS = {
         },
         "about_5": {
           "enabled": true,
-          "image": "explo.jpg",
+          "image": "Waterfall Morning Light.jpg",
           "alt": "Welcome to Explo Era"
         },
         "booking_1": { "enabled": false, "image": "Cave Ecosystem 2.jpg", "alt": "Best price, no surprises" },
