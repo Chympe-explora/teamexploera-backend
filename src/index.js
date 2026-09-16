@@ -74,7 +74,7 @@
  */
 
 import { json, corsHeaders, handleVisit, handleTap, handleDraft, handlePayNow, handleReceipt, handleSubmit, handleBookingCallback, handleStatusCheck, handleRefundRequest, handleRefundStatus } from "./booking.js";
-import { handleGetContent, handleGetPrices, handleGetImages, handleGetHighlights, handleGetDiscounts, handleCalculatePrice, handleMedia, handleVideoMedia, handleAdminResetImages } from "./content-api.js";
+import { handleGetContent, handleGetPrices, handleGetImages, handleGetHighlights, handleGetDiscounts, handleGetBootstrap, handleCalculatePrice, handleMedia, handleVideoMedia, handleAdminResetImages } from "./content-api.js";
 import { handleTelegramAdminUpdate, isAdmin } from "./telegram-bot.js";
 import { getGuideByChatId } from "./guides.js";
 import { isLocked } from "./auth.js";
@@ -201,6 +201,7 @@ async function route(request, env, ctx, url) {
       if (url.pathname === "/api/prices" && request.method === "GET") return handleGetPrices(request, url, env, ctx);
       if (url.pathname === "/api/images" && request.method === "GET") return handleGetImages(request, url, env, ctx);
       if (url.pathname === "/api/highlights" && request.method === "GET") return handleGetHighlights(request, url, env, ctx);
+      if (url.pathname === "/api/bootstrap" && request.method === "GET") return handleGetBootstrap(request, url, env, ctx);
       if (url.pathname === "/api/discounts" && request.method === "GET") return handleGetDiscounts(request, env, ctx);
       if (url.pathname === "/api/calculate-price" && request.method === "POST") return handleCalculatePrice(request, env);
       if (url.pathname === "/api/admin/reset-images" && request.method === "POST") return handleAdminResetImages(request, env);

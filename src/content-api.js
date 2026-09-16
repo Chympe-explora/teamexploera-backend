@@ -90,6 +90,43 @@ export async function handleGetDiscounts(request, env, ctx) {
   });
 }
 
+// ---------------------------------------------------------------------
+// Combined bootstrap endpoint — content + prices + discounts + images
+// in ONE round trip. live-content.js used to call four separate
+// endpoints back to back, each over a SYNCHRONOUS XHR (deliberately
+// blocking, so app.js never renders default content before the real
+// content arrives) — meaning every full page load paid for four
+// sequential network round trips, one after another, before a single
+// pixel could paint. This is that same data, computed with one set of
+// PARALLEL KV reads instead of four sequential HTTP requests.
+export async function handleGetBootstrap(request, url, env, ctx) {
+  const site = url.searchParams.get("site");
+  if (!isValidSite(site)) return json({ ok: false, error: "bad site" }, env, 400);
+  return withEdgeCache(request, ctx, CONTENT_CACHE_TTL, async () => {
+    const [contentOverride, pricesOverride, discountsOverride, imagesOverride] = await Promise.all([
+      getDoc(env, `content:${site}`, {}),
+      getDoc(env, `prices:${site}`, {}),
+      getDoc(env, "discounts:global", {}),
+      getDoc(env, `images:${site}`, {}),
+    ]);
+
+    const discounts = deepMerge(DEFAULT_DISCOUNTS, discountsOverride);
+
+    const imageDefaults = SCHEMA_DEFAULTS[site]?.KC_IMAGES || {};
+    const images = {};
+    for (const key of Object.keys(imagesOverride)) {
+      const value = imagesOverride[key];
+      if (!value || typeof value !== "string" || value === imageDefaults[key]) continue;
+      images[key] = `/media/${site}/${key}`;
+    }
+
+    return json(
+      { ok: true, content: contentOverride, prices: pricesOverride, discounts, images },
+      env
+    );
+  });
+}
+
 // POST /api/admin/reset-images  { site, keys: ["logo", "expeditionPackageCard"] }
 // Header: x-admin-secret: <ADMIN_API_SECRET>
 //
