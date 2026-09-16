@@ -55,6 +55,44 @@ export function json(data, env, status) {
   });
 }
 
+// ---------------------------------------------------------------------
+// EDGE CACHE for cheap, high-traffic public GET endpoints (content,
+// prices, images, highlights, discounts, reviews, ratings). These are
+// called on every single page load, but the underlying data only
+// changes when an admin edits something through the Telegram bot — so
+// serving a short-lived cached copy from Cloudflare's edge (skipping
+// the Worker invocation AND the KV read entirely on a hit) is safe.
+//
+// IMPORTANT: a `Cache-Control` header alone does NOT get a Worker's
+// JSON response cached by Cloudflare's CDN — that only happens
+// automatically for static assets. Reaching the edge requires calling
+// the Cache API explicitly, which is what this helper does. `ttlSeconds`
+// is deliberately short (seconds, not hours) so a change made in the
+// Telegram admin bot shows up for visitors almost immediately, while
+// still absorbing the vast majority of read traffic during that window.
+export async function withEdgeCache(request, ctx, ttlSeconds, compute) {
+  if (request.method !== "GET" || typeof caches === "undefined" || !caches.default) {
+    return compute();
+  }
+  const cache = caches.default;
+  const cacheKey = new Request(request.url, request);
+  const hit = await cache.match(cacheKey);
+  if (hit) return hit;
+
+  const response = await compute();
+  if (!response.ok) return response;
+
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", `public, max-age=${ttlSeconds}`);
+  const fresh = new Response(response.body, { status: response.status, headers });
+  if (ctx && typeof ctx.waitUntil === "function") {
+    ctx.waitUntil(cache.put(cacheKey, fresh.clone()));
+  } else {
+    await cache.put(cacheKey, fresh.clone());
+  }
+  return fresh;
+}
+
 async function tg(env, method, body) {
   const r = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`, {
     method: "POST",
@@ -499,9 +537,10 @@ export async function handleSubmit(request, env, ctx) {
       // group never gets actionable buttons once guides are handling it.
       await sendBookingToOne(env, env.TELEGRAM_CHAT_ID, groupInfoText, null, receipt, true).catch(() => {});
     }
-    for (const g of eligibleGuides) {
-      await assignBookingToGuide(env, g.id, bookingId);
-    }
+    // Each guide has their own guideBookings:<id> key, so these writes
+    // never touch the same KV key and are safe to run concurrently
+    // instead of one-at-a-time.
+    await Promise.all(eligibleGuides.map((g) => assignBookingToGuide(env, g.id, bookingId)));
 
     await setStatus(env, bookingId, "pending");
     // receipt (fileId/isImage) is saved onto the durable booking record

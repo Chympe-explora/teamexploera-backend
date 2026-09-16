@@ -8,23 +8,41 @@ import { SCHEMA_DEFAULTS } from "./content-schema.js";
 import { isValidSite, getDoc, saveDoc, deepMerge } from "./store.js";
 import { calculatePrice, DEFAULT_DISCOUNTS } from "./pricing.js";
 import { tgResolveFileUrl } from "./telegram.js";
-import { json, corsHeaders } from "./booking.js";
+import { json, corsHeaders, withEdgeCache } from "./booking.js";
 import { secureCompare } from "./security.js";
 
-export async function handleGetContent(url, env) {
+// Public GET content endpoints are cached at the edge for this long.
+// Short enough that a Telegram admin edit is live for every visitor
+// well within half a minute; long enough to absorb almost all repeat
+// traffic without touching KV.
+const CONTENT_CACHE_TTL = 30;
+
+export async function handleGetContent(request, url, env, ctx) {
   const site = url.searchParams.get("site");
   if (!isValidSite(site)) return json({ ok: false, error: "bad site" }, env, 400);
-  const base = SCHEMA_DEFAULTS[site]?.KC_CONTENT || {};
-  const override = await getDoc(env, `content:${site}`, {});
-  return json({ ok: true, content: deepMerge(base, override) }, env);
+  return withEdgeCache(request, ctx, CONTENT_CACHE_TTL, async () => {
+    // Only the admin's own edits go over the wire here — NOT merged with
+    // SCHEMA_DEFAULTS first. live-content.js already has the full default
+    // content locally (baked into config.js, loaded before this request
+    // even fires) and deep-merges this response on top of it itself; the
+    // only consumer of this endpoint is that visitor-facing merge (the
+    // Telegram admin bot reads SCHEMA_DEFAULTS directly from this same
+    // module, not over HTTP). Sending the merged object too was pure
+    // duplication: every page load was downloading the ~20-30KB static
+    // schema a second time, for content already sitting in config.js.
+    const override = await getDoc(env, `content:${site}`, {});
+    return json({ ok: true, content: override }, env);
+  });
 }
 
-export async function handleGetPrices(url, env) {
+export async function handleGetPrices(request, url, env, ctx) {
   const site = url.searchParams.get("site");
   if (!isValidSite(site)) return json({ ok: false, error: "bad site" }, env, 400);
-  const base = SCHEMA_DEFAULTS[site]?.KC_PRICES || {};
-  const override = await getDoc(env, `prices:${site}`, {});
-  return json({ ok: true, prices: deepMerge(base, override) }, env);
+  return withEdgeCache(request, ctx, CONTENT_CACHE_TTL, async () => {
+    // Same reasoning as handleGetContent above — thin override only.
+    const override = await getDoc(env, `prices:${site}`, {});
+    return json({ ok: true, prices: override }, env);
+  });
 }
 
 // Only returns keys the admin has actually changed via the bot — the
@@ -40,30 +58,36 @@ export async function handleGetPrices(url, env) {
 // still just the untouched default filename — only genuine overrides
 // ever get turned into a /media link. This makes any already-poisoned
 // KV doc self-heal on the very next page load, no manual reset needed.
-export async function handleGetImages(url, env) {
+export async function handleGetImages(request, url, env, ctx) {
   const site = url.searchParams.get("site");
   if (!isValidSite(site)) return json({ ok: false, error: "bad site" }, env, 400);
-  const override = await getDoc(env, `images:${site}`, {});
-  const defaults = SCHEMA_DEFAULTS[site]?.KC_IMAGES || {};
-  const urls = {};
-  for (const key of Object.keys(override)) {
-    const value = override[key];
-    if (!value || typeof value !== "string" || value === defaults[key]) continue;
-    urls[key] = `/media/${site}/${key}`;
-  }
-  return json({ ok: true, images: urls }, env);
+  return withEdgeCache(request, ctx, CONTENT_CACHE_TTL, async () => {
+    const override = await getDoc(env, `images:${site}`, {});
+    const defaults = SCHEMA_DEFAULTS[site]?.KC_IMAGES || {};
+    const urls = {};
+    for (const key of Object.keys(override)) {
+      const value = override[key];
+      if (!value || typeof value !== "string" || value === defaults[key]) continue;
+      urls[key] = `/media/${site}/${key}`;
+    }
+    return json({ ok: true, images: urls }, env);
+  });
 }
 
-export async function handleGetHighlights(url, env) {
+export async function handleGetHighlights(request, url, env, ctx) {
   const site = url.searchParams.get("site");
   if (!isValidSite(site)) return json({ ok: false, error: "bad site" }, env, 400);
-  const items = await getDoc(env, `highlights:${site}`, []);
-  return json({ ok: true, highlights: (items || []).filter((h) => h.active !== false) }, env);
+  return withEdgeCache(request, ctx, CONTENT_CACHE_TTL, async () => {
+    const items = await getDoc(env, `highlights:${site}`, []);
+    return json({ ok: true, highlights: (items || []).filter((h) => h.active !== false) }, env);
+  });
 }
 
-export async function handleGetDiscounts(env) {
-  const override = await getDoc(env, "discounts:global", {});
-  return json({ ok: true, discounts: deepMerge(DEFAULT_DISCOUNTS, override) }, env);
+export async function handleGetDiscounts(request, env, ctx) {
+  return withEdgeCache(request, ctx, CONTENT_CACHE_TTL, async () => {
+    const override = await getDoc(env, "discounts:global", {});
+    return json({ ok: true, discounts: deepMerge(DEFAULT_DISCOUNTS, override) }, env);
+  });
 }
 
 // POST /api/admin/reset-images  { site, keys: ["logo", "expeditionPackageCard"] }
@@ -132,30 +156,37 @@ export async function handleCalculatePrice(request, env) {
 // fresh CDN link and streams the bytes straight through. Nothing is
 // cached on our side beyond normal HTTP caching, by design — Telegram
 // is the only place the image bytes live.
-export async function handleMedia(url, env) {
+export async function handleMedia(request, url, env, ctx) {
   const parts = url.pathname.split("/").filter(Boolean); // ["media", site, key]
   const [, site, key] = parts;
   if (!isValidSite(site) || !key) return new Response("not found", { status: 404 });
 
-  const override = await getDoc(env, `images:${site}`, {});
-  const fileId = override[key];
-  const defaults = SCHEMA_DEFAULTS[site]?.KC_IMAGES || {};
-  // Same guard as handleGetImages: never try to resolve a plain default
-  // filename (not a real Telegram file_id) through the Telegram API.
-  if (!fileId || typeof fileId !== "string" || fileId === defaults[key]) {
-    return new Response("not found", { status: 404 });
-  }
+  // Every uncached hit here costs TWO live Telegram round-trips (resolve
+  // file_id -> CDN url, then fetch the bytes) before a single byte
+  // reaches the visitor. Admin-uploaded photos change rarely, so this is
+  // a good edge-cache candidate — bumped from 5 min to 1 hour, backed by
+  // the actual Cache API (not just a header) so repeat visits worldwide
+  // skip Telegram entirely during that window.
+  return withEdgeCache(request, ctx, 3600, async () => {
+    const override = await getDoc(env, `images:${site}`, {});
+    const fileId = override[key];
+    const defaults = SCHEMA_DEFAULTS[site]?.KC_IMAGES || {};
+    // Same guard as handleGetImages: never try to resolve a plain default
+    // filename (not a real Telegram file_id) through the Telegram API.
+    if (!fileId || typeof fileId !== "string" || fileId === defaults[key]) {
+      return new Response("not found", { status: 404 });
+    }
 
-  const fileUrl = await tgResolveFileUrl(env, fileId);
-  if (!fileUrl) return new Response("not found", { status: 404 });
+    const fileUrl = await tgResolveFileUrl(env, fileId);
+    if (!fileUrl) return new Response("not found", { status: 404 });
 
-  const upstream = await fetch(fileUrl);
-  if (!upstream.ok) return new Response("not found", { status: 404 });
+    const upstream = await fetch(fileUrl);
+    if (!upstream.ok) return new Response("not found", { status: 404 });
 
-  const headers = new Headers(upstream.headers);
-  headers.set("Cache-Control", "public, max-age=300");
-  headers.set("Access-Control-Allow-Origin", corsHeaders(env)["Access-Control-Allow-Origin"]);
-  return new Response(upstream.body, { status: 200, headers });
+    const headers = new Headers(upstream.headers);
+    headers.set("Access-Control-Allow-Origin", corsHeaders(env)["Access-Control-Allow-Origin"]);
+    return new Response(upstream.body, { status: 200, headers });
+  });
 }
 
 // GET /media-video/<site>/<key> — same trick as /media above, but for

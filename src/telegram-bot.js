@@ -828,15 +828,25 @@ async function guideBookingBuckets(env, guideId) {
   const ids = await getGuideBookingIds(env, guideId);
   const todayStr = new Date().toISOString().slice(0, 10);
   const buckets = { today: [], future: [], all: ids, completed: [], remaining: [] };
-  for (const id of ids) {
-    const [status, bookingRaw, completedRaw] = await Promise.all([
-      getStatus(env, id),
-      env.BOOKINGS.get(`booking:${id}`),
-      env.BOOKINGS.get(`completed:${id}`),
-    ]);
-    const booking = bookingRaw ? JSON.parse(bookingRaw) : null;
-    const date = booking?.data?.date || null;
-    const isCompleted = completedRaw === "1";
+  // Fetch every id's (status, booking, completed) trio in parallel instead
+  // of one id at a time — with a guide's history capped at 300 bookings,
+  // a sequential loop here meant up to 300 round-trips back-to-back on
+  // every dashboard tap. Results are then bucketed in `ids` order below,
+  // so the output is identical regardless of which KV reads settle first.
+  const perId = await Promise.all(
+    ids.map(async (id) => {
+      const [status, bookingRaw, completedRaw] = await Promise.all([
+        getStatus(env, id),
+        env.BOOKINGS.get(`booking:${id}`),
+        env.BOOKINGS.get(`completed:${id}`),
+      ]);
+      const booking = bookingRaw ? JSON.parse(bookingRaw) : null;
+      const date = booking?.data?.date || null;
+      const isCompleted = completedRaw === "1";
+      return { id, date, isCompleted, status };
+    })
+  );
+  for (const { id, date, isCompleted, status } of perId) {
     if (date === todayStr) buckets.today.push(id);
     if (date && date > todayStr) buckets.future.push(id);
     if (isCompleted) buckets.completed.push(id);

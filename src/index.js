@@ -197,14 +197,14 @@ async function route(request, env, ctx, url) {
       }
 
       // ---- content / pricing (new) ----
-      if (url.pathname === "/api/content" && request.method === "GET") return handleGetContent(url, env);
-      if (url.pathname === "/api/prices" && request.method === "GET") return handleGetPrices(url, env);
-      if (url.pathname === "/api/images" && request.method === "GET") return handleGetImages(url, env);
-      if (url.pathname === "/api/highlights" && request.method === "GET") return handleGetHighlights(url, env);
-      if (url.pathname === "/api/discounts" && request.method === "GET") return handleGetDiscounts(env);
+      if (url.pathname === "/api/content" && request.method === "GET") return handleGetContent(request, url, env, ctx);
+      if (url.pathname === "/api/prices" && request.method === "GET") return handleGetPrices(request, url, env, ctx);
+      if (url.pathname === "/api/images" && request.method === "GET") return handleGetImages(request, url, env, ctx);
+      if (url.pathname === "/api/highlights" && request.method === "GET") return handleGetHighlights(request, url, env, ctx);
+      if (url.pathname === "/api/discounts" && request.method === "GET") return handleGetDiscounts(request, env, ctx);
       if (url.pathname === "/api/calculate-price" && request.method === "POST") return handleCalculatePrice(request, env);
       if (url.pathname === "/api/admin/reset-images" && request.method === "POST") return handleAdminResetImages(request, env);
-      if (url.pathname.startsWith("/media/") && request.method === "GET") return handleMedia(url, env);
+      if (url.pathname.startsWith("/media/") && request.method === "GET") return handleMedia(request, url, env, ctx);
       if (url.pathname.startsWith("/media-video/") && request.method === "GET") return handleVideoMedia(request, url, env);
 
       // ---- ERA AI chat assistant (new) ----
@@ -213,7 +213,7 @@ async function route(request, env, ctx, url) {
       if (url.pathname === "/api/era/typing" && request.method === "POST") return handleEraTyping(request, env, ctx);
 
       // ---- visitor ratings (new) ----
-      if (url.pathname === "/api/ratings" && request.method === "GET") return handleGetRatings(url, env);
+      if (url.pathname === "/api/ratings" && request.method === "GET") return handleGetRatings(request, url, env, ctx);
       if (url.pathname === "/api/ratings" && request.method === "POST") return handleSubmitRating(request, env);
 
       // ---- one shared Telegram webhook ----

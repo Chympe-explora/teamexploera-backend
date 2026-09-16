@@ -21,7 +21,7 @@
  */
 
 import { isValidSite, getDoc, saveDoc } from "./store.js";
-import { json } from "./booking.js";
+import { json, withEdgeCache } from "./booking.js";
 import { tgSendMessage } from "./telegram.js";
 
 // Keeps the stored doc (and the Telegram message that holds it) from
@@ -35,25 +35,27 @@ function escapeHtml(s) {
 }
 
 // GET /api/ratings?site=root|krem-chympe|wilderness-expedition
-export async function handleGetRatings(url, env) {
+export async function handleGetRatings(request, url, env, ctx) {
   const site = url.searchParams.get("site");
   if (!isValidSite(site)) return json({ ok: false, error: "bad site" }, env, 400);
 
-  const list = await getDoc(env, `ratings:${site}`, []);
-  const visible = (Array.isArray(list) ? list : []).filter((r) => r && r.hidden !== true);
-  const count = visible.length;
-  const average = count ? Math.round((visible.reduce((sum, r) => sum + (Number(r.rating) || 0), 0) / count) * 10) / 10 : 0;
+  return withEdgeCache(request, ctx, 30, async () => {
+    const list = await getDoc(env, `ratings:${site}`, []);
+    const visible = (Array.isArray(list) ? list : []).filter((r) => r && r.hidden !== true);
+    const count = visible.length;
+    const average = count ? Math.round((visible.reduce((sum, r) => sum + (Number(r.rating) || 0), 0) / count) * 10) / 10 : 0;
 
-  // 5/4/3/2/1-star breakdown — lets the website show a bar per star
-  // count, not just the single average number.
-  const breakdown = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
-  for (const r of visible) {
-    const stars = Math.round(Number(r.rating) || 0);
-    if (breakdown[stars] !== undefined) breakdown[stars]++;
-  }
+    // 5/4/3/2/1-star breakdown — lets the website show a bar per star
+    // count, not just the single average number.
+    const breakdown = { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 };
+    for (const r of visible) {
+      const stars = Math.round(Number(r.rating) || 0);
+      if (breakdown[stars] !== undefined) breakdown[stars]++;
+    }
 
-  const sorted = [...visible].sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  return json({ ok: true, ratings: sorted, average, count, breakdown }, env);
+    const sorted = [...visible].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    return json({ ok: true, ratings: sorted, average, count, breakdown }, env);
+  });
 }
 
 // POST /api/ratings  { site, name, rating, comment, sessionId }

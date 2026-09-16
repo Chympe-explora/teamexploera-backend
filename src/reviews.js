@@ -13,7 +13,7 @@
  * "one message per thing" editing need the way drafts/content have.
  */
 
-import { json } from "./booking.js";
+import { json, withEdgeCache } from "./booking.js";
 import { tgSendMessage } from "./telegram.js";
 
 const MAX_NAME_LEN = 60;
@@ -45,23 +45,25 @@ function escapeHtml(s) {
 }
 
 // GET /api/reviews?site=root
-export async function handleGetReviews(url, env) {
+export async function handleGetReviews(request, url, env, ctx) {
   const site = url.searchParams.get("site") || "root";
-  const reviews = await kvGetReviews(env, site);
-  const count = reviews.length;
-  const average = count ? reviews.reduce((sum, r) => sum + (r.rating || 0), 0) / count : 0;
-  const sorted = [...reviews].sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  return json(
-    {
-      ok: true,
-      average: Math.round(average * 10) / 10,
-      count,
-      reviews: sorted.slice(0, MAX_RETURNED).map((r) => ({
-        id: r.id, name: r.name, rating: r.rating, comment: r.comment, ts: r.ts,
-      })),
-    },
-    env
-  );
+  return withEdgeCache(request, ctx, 30, async () => {
+    const reviews = await kvGetReviews(env, site);
+    const count = reviews.length;
+    const average = count ? reviews.reduce((sum, r) => sum + (r.rating || 0), 0) / count : 0;
+    const sorted = [...reviews].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    return json(
+      {
+        ok: true,
+        average: Math.round(average * 10) / 10,
+        count,
+        reviews: sorted.slice(0, MAX_RETURNED).map((r) => ({
+          id: r.id, name: r.name, rating: r.rating, comment: r.comment, ts: r.ts,
+        })),
+      },
+      env
+    );
+  });
 }
 
 // POST /api/reviews  { site, name, rating, comment }
