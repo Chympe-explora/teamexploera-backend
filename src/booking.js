@@ -872,6 +872,22 @@ export async function handleRefundRequest(request, env, ctx) {
 
   async function send() {
     const activeElsewhere = sessionId ? await isSessionActive(env, sessionId) : false;
+
+    // If this booking's original payment receipt is on file (it's saved
+    // onto the booking record at submit time — see handleSubmit above),
+    // forward it first as its own message, so whoever reviews the refund
+    // has the receipt in front of them before the Approve/Deny buttons.
+    // Sent as a separate message (not attached to the buttoned message
+    // itself) on purpose: handleRefundDecision below edits this request
+    // via editMessageText, which only works on a text message, not a
+    // photo/document's caption — keeping the receipt separate means that
+    // edit keeps working exactly as it already does for text-only requests.
+    if (booking && booking.receipt && booking.receipt.fileId) {
+      const receiptCaption = `\ud83e\uddfe <b>Payment receipt</b> — refund request for ${escapeHtml(bookingId)}`;
+      const sendReceipt = booking.receipt.isImage ? tgSendPhotoByIdWithButtons : tgSendDocumentByIdWithButtons;
+      await sendReceipt(env, booking.receipt.fileId, receiptCaption, undefined, activeElsewhere, env.TELEGRAM_CHAT_ID).catch(() => {});
+    }
+
     const res = await tg(env, "sendMessage", { chat_id: env.TELEGRAM_CHAT_ID, parse_mode: "HTML", text, reply_markup: replyMarkup, disable_notification: activeElsewhere });
     if (res.ok && res.result && res.result.message_id) {
       await env.BOOKINGS.put(`refundmsg:${bookingId}`, String(res.result.message_id), { expirationTtl: 60 * 60 * 24 * 30 });
