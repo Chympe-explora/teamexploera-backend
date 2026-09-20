@@ -15,7 +15,7 @@ import { SCHEMA_DEFAULTS } from "./content-schema.js";
 import { SITES, SITE_LABELS, getDoc, saveDoc, deepMerge, getPath, setPath, setPathSeeded, deletePath, getSession, setSession, clearSession } from "./store.js";
 import { listChildren, humanize, chunk } from "./walker.js";
 import { DEFAULT_DISCOUNTS } from "./pricing.js";
-import { tg, tgSendMessage, tgAnswerCallbackQuery, tgSendPhotoByFileId, tgSendDocumentByFileId, kb, btn } from "./telegram.js";
+import { tg, tgSendMessage, tgAnswerCallbackQuery, tgSendPhotoByFileId, tgSendDocumentByFileId, tgEditMessageReplyMarkup, kb, btn } from "./telegram.js";
 import { helpButton, handleHelpCallback, smallRows } from "./help.js";
 import { getLiveStats, resetStats } from "./stats.js";
 import {
@@ -1428,10 +1428,44 @@ async function handleReplyCommand(env, chatId, text) {
 
 // ---------------- CALLBACK ROUTER ----------------
 
+// Admin taps "📌 Pin to top" (or "📌 Unpin") on a rating's heads-up
+// message (see the reply_markup added in ratings.js's
+// handleSubmitRating). Flips that one entry's `pinned` flag in the
+// same ratings:<site> doc the website reads from, then edits the
+// button in place so the message reflects the new state — no
+// separate confirmation needed, the button itself is the receipt.
+// handleGetRatings (ratings.js) sorts pinned entries to the top of
+// what visitors see, newest-pinned first, same as the rest of the
+// list.
+async function togglePinRating(env, chatId, messageId, site, id) {
+  const docKey = `ratings:${site}`;
+  const list = await getDoc(env, docKey, []);
+  const arr = Array.isArray(list) ? list : [];
+  const entry = arr.find((r) => r && r.id === id);
+  if (!entry) {
+    await tgSendMessage(env, chatId, "⚠️ Couldn't find that rating anymore — it may have been deleted.");
+    return;
+  }
+  entry.pinned = !entry.pinned;
+  await saveDoc(env, docKey, arr, {
+    logChange: `${entry.pinned ? "Pinned" : "Unpinned"} a rating from ${entry.name} (${site})`,
+  });
+
+  const newLabel = entry.pinned ? "📌 Unpin" : "📌 Pin to top";
+  await tgEditMessageReplyMarkup(env, chatId, messageId, {
+    inline_keyboard: [[{ text: newLabel, callback_data: `pinrating:${site}:${id}` }]],
+  }).catch(() => {});
+}
+
 async function handleCallback(env, chatId, messageId, data, userId) {
   const [action, ...rest] = data.split(":");
 
   if (action === "home") return sendMainMenu(env, chatId);
+
+  if (action === "pinrating") {
+    const [site, id] = rest;
+    return togglePinRating(env, chatId, messageId, site, id);
+  }
 
   // ---- 🔑 admin login & security ----
   if (action === "adminsecurity") return sendAdminSecurityMenu(env, chatId, userId);

@@ -53,7 +53,14 @@ export async function handleGetRatings(request, url, env, ctx) {
       if (breakdown[stars] !== undefined) breakdown[stars]++;
     }
 
-    const sorted = [...visible].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    const sorted = [...visible].sort((a, b) => {
+      // Admin-pinned ratings (see togglePinRating in telegram-bot.js)
+      // float to the top, newest-pinned first; everything else follows
+      // in its usual newest-first order beneath them.
+      const pinDiff = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+      if (pinDiff !== 0) return pinDiff;
+      return (b.ts || 0) - (a.ts || 0);
+    });
     return json({ ok: true, ratings: sorted, average, count, breakdown }, env);
   });
 }
@@ -72,6 +79,7 @@ export async function handleSubmitRating(request, env) {
     name: String(name || "Anonymous visitor").trim().slice(0, 60) || "Anonymous visitor",
     rating: stars,
     comment: String(comment || "").trim().slice(0, 500),
+    pinned: false,
     ts: Date.now(),
   };
 
@@ -91,7 +99,9 @@ export async function handleSubmitRating(request, env) {
       `<b>${escapeHtml(entry.name)}</b>` +
       (entry.comment ? `\n\u201c${escapeHtml(entry.comment)}\u201d` : "") +
       (sessionId ? `\n\n<i>session: ${escapeHtml(String(sessionId).slice(0, 64))}</i>` : "");
-    await tgSendMessage(env, chatId, text).catch(() => {});
+    await tgSendMessage(env, chatId, text, {
+      reply_markup: { inline_keyboard: [[{ text: "📌 Pin to top", callback_data: `pinrating:${site}:${entry.id}` }]] },
+    }).catch(() => {});
   }
 
   return json({ ok: true, rating: entry }, env);
