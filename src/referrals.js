@@ -93,20 +93,25 @@ function slugifyName(name) {
 // this exact formula lives in each site's app.js) and re-checked by
 // the backend on submit.
 //
+//   discountable  = subtotal − excluded   (excluded = the 4x4 jeep, unless
+//                                          the admin included it on the card)
 //   coveredPeople = min(people on the card, people on the booking)
-//   base          = subtotal × coveredPeople ÷ people on the booking
+//   base          = discountable × coveredPeople ÷ people on the booking
 //   percent card  → round(base × percent ÷ 100)
 //   flat card     → min(flat ₹, round(base))
 //
 // so a 1-person card on a 3-person booking only ever discounts one
 // person's share of the bill; the other two are charged normally.
 // ---------------------------------------------------------------------
-export function computeReferralDiscount({ percent, flat, cardPeople, subtotal, persons }) {
+export function computeReferralDiscount({ percent, flat, cardPeople, subtotal, persons, excluded }) {
   const total = Number(persons) || 0;
   const sub = Number(subtotal) || 0;
   if (total < 1 || sub <= 0) return { discount: 0, coveredPeople: 0 };
   const coveredPeople = Math.min(Math.max(1, Number(cardPeople) || 1), total);
-  const base = (sub * coveredPeople) / total;
+  // The 4x4 jeep is a per-group charge, so it comes off BEFORE the per-guest
+  // share is worked out (never more than the subtotal itself).
+  const skip = Math.min(Math.max(0, Number(excluded) || 0), sub);
+  const base = ((sub - skip) * coveredPeople) / total;
   let discount = 0;
   if (percent) discount = Math.round((base * percent) / 100);
   else if (flat) discount = Math.min(Number(flat), Math.round(base));
@@ -153,16 +158,23 @@ export function siteLogoUrl(env, site) {
  *
  * @param {object} p
  * @param {string} p.site            "krem-chympe" | "wilderness-expedition"
- * @param {string} p.packageLabel    free-text package name
+ * @param {string} p.packageLabel    package name shown on the card
+ * @param {string} [p.packageKey]    "sharedTour" | "privatePackage" (the site's own package key)
  * @param {string} p.visitorName
  * @param {number} p.people          how many guests this card covers
  * @param {string} p.mobile          guest's mobile number (any format)
  * @param {number} p.originalAmount  full price for those guests, before the code, ₹
  * @param {"percent"|"flat"} p.discountType
  * @param {number} p.discountValue   percent (0-100) or flat ₹ amount
+ * @param {number} [p.fourByFourAmount]   part of originalAmount that is the 4x4 jeep (₹), 0 if none
+ * @param {boolean} [p.includeFourByFour] true ONLY if the admin asked for the 4x4 to be discounted too
  */
 export async function createReferralCode(env, p) {
   const { site, packageLabel, visitorName, people, mobile, originalAmount, discountType, discountValue } = p;
+  const fourByFourAmount = Math.min(Math.max(0, Math.round(Number(p.fourByFourAmount) || 0)), originalAmount);
+  const includeFourByFour = p.includeFourByFour === true;
+  // Only the non-4x4 part of the price is discountable unless the admin said so.
+  const discountable = includeFourByFour ? originalAmount : originalAmount - fourByFourAmount;
 
   const { doc, codes } = await loadCodes(env);
   pruneFinished(codes);
@@ -172,8 +184,8 @@ export async function createReferralCode(env, p) {
   const flat = discountType === "flat" ? discountValue : undefined;
 
   let amountDue = originalAmount;
-  if (percent) amountDue = Math.round(originalAmount * (1 - percent / 100));
-  if (flat) amountDue = Math.max(0, originalAmount - flat);
+  if (percent) amountDue = originalAmount - Math.round((discountable * percent) / 100);
+  if (flat) amountDue = Math.max(0, originalAmount - Math.min(flat, discountable));
 
   const guests = Math.max(1, Math.round(Number(people) || 1));
 
@@ -183,11 +195,14 @@ export async function createReferralCode(env, p) {
     ...(flat ? { flat } : {}),
     site,
     packageLabel: packageLabel || "",
+    packageKey: p.packageKey || "",
     visitorName,
     people: guests,
     mobile: normalizeMobile(mobile),
     originalAmount,
     amountDue,
+    fourByFourAmount,
+    includeFourByFour,
     createdAt: new Date().toISOString(),
     redeemed: false,
   };
@@ -207,6 +222,8 @@ export async function createReferralCode(env, p) {
     percent: percent || null,
     flat: flat || null,
     amountDue,
+    fourByFourAmount,
+    includeFourByFour,
   };
 }
 
@@ -236,6 +253,11 @@ export function buildReferralCardCaption(r) {
     `<b>${SITE_LABELS[r.site] || r.site}</b>${r.packageLabel ? " — " + escapeHtml(r.packageLabel) : ""}\n\n` +
     `Guest: <b>${escapeHtml(r.visitorName)}</b> · ${guestsLine}\n` +
     `Package price: ₹${r.originalAmount}\n` +
+    (r.fourByFourAmount > 0
+      ? (r.includeFourByFour
+          ? `4x4 (₹${r.fourByFourAmount}): included in the discount\n`
+          : `4x4 (₹${r.fourByFourAmount}): NOT discounted\n`)
+      : "") +
     `Discount: ${discountLine} (save ₹${savings})\n` +
     `Amount to pay: <b>₹${r.amountDue}</b>\n\n` +
     `Referral code: <code>${r.code}</code>\n\n` +
@@ -346,12 +368,18 @@ export async function verifyAndClaimForBooking(env, { siteId, bookingId, data })
     return { ok: false, status: 400, referralError: "invalid", error: "Referral details are missing from this booking." };
   }
 
+  // How much of the subtotal is the 4x4 jeep. Only honoured if the card does
+  // NOT include 4x4 — if the admin included it, nothing is left out. The
+  // amount itself comes from the site (like the subtotal), clamped to it.
+  const excluded = entry.includeFourByFour === true ? 0 : Math.min(Math.max(0, Number(data.referralExcluded) || 0), subtotal);
+
   const { discount, coveredPeople } = computeReferralDiscount({
     percent: entry.percent,
     flat: entry.flat,
     cardPeople: entry.people,
     subtotal,
     persons,
+    excluded,
   });
   // The browser shows the visitor their discounted total, so its
   // number must never be bigger than what this card is worth.
@@ -373,6 +401,7 @@ export async function verifyAndClaimForBooking(env, { siteId, bookingId, data })
       totalPersons: persons,
       cardPeople: entry.people,
       guestName: entry.visitorName,
+      excluded,
     },
   };
 }
@@ -415,5 +444,6 @@ export function referralSummaryLine(r) {
     r.totalPersons > r.coveredPeople
       ? ` (applied to ${r.coveredPeople} of ${r.totalPersons} guests — the rest at regular price)`
       : "";
-  return `Referral code ${r.code} used — ₹${r.discount} discount${who}`;
+  const skipped = r.excluded > 0 ? ` (4x4 ₹${r.excluded} not discounted)` : "";
+  return `Referral code ${r.code} used — ₹${r.discount} discount${who}${skipped}`;
 }

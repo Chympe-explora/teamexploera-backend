@@ -1787,8 +1787,10 @@ async function handleCallback(env, chatId, messageId, data, userId) {
 
   // ---- 🎁 referral card ----
   if (action === "refcard") return startReferralFlow(env, chatId);
-  if (action === "refsite") return chooseReferralSite(env, chatId, rest.join(":"));
+  if (action === "refpkg") return chooseReferralPackage(env, chatId, rest[0], rest[1]);
+  if (action === "refsite") return chooseReferralSite(env, chatId, rest.join(":")); // older buttons still in chat
   if (action === "refcancel") return cancelReferralFlow(env, chatId);
+  if (action === "ref4x4") return chooseReferralFourByFour(env, chatId, rest[0] === "yes");
 
   return sendMainMenu(env, chatId);
 }
@@ -2272,7 +2274,8 @@ async function handleAwaitedInput(env, chatId, session, msg) {
 
   if (
     awaiting.type === "refPackage" || awaiting.type === "refName" || awaiting.type === "refPeople" ||
-    awaiting.type === "refMobile" || awaiting.type === "refAmount" || awaiting.type === "refDiscount"
+    awaiting.type === "refMobile" || awaiting.type === "refAmount" || awaiting.type === "refFourByFour" ||
+    awaiting.type === "refFourByFourChoice" || awaiting.type === "refDiscount"
   ) {
     return handleReferralAwaitedInput(env, chatId, session, msg, awaiting.type);
   }
@@ -2998,11 +3001,32 @@ export async function sendDiscountsMenu(env, chatId) {
 // card rendering.
 
 async function startReferralFlow(env, chatId) {
-  // Only the two booking sites have a referral box — the home site has
-  // no booking form, so a code for it could never be used.
-  const rows = SITES.filter((s) => s !== "root").map((s) => [btn(SITE_LABELS[s] || s, `refsite:${s}`)]);
+  // Pick the exact package in one tap. The home site has no booking form,
+  // so a code for it could never be used and it isn't offered.
+  const rows = REFERRAL_PACKAGES.map((o) => [btn(o.button, `refpkg:${o.site}:${o.packageKey}`)]);
   rows.push([btn("❌ Cancel", "refcancel")]);
-  await tgSendMessage(env, chatId, "🎁 <b>Referral Card</b>\n\nWhich site/destination is this for?", { reply_markup: kb(rows) });
+  await tgSendMessage(env, chatId, "🎁 <b>Referral Card</b>\n\nWhich package is this for?", { reply_markup: kb(rows) });
+}
+
+// The three packages a referral card can be made for. `packageKey` matches
+// the site's own package keys (sharedTour / privatePackage). Wilderness
+// Expedition sells one package, which the site codes as "sharedTour".
+const REFERRAL_PACKAGES = [
+  { site: "krem-chympe", packageKey: "sharedTour", label: "Shared Package", button: "🌊 Krem Chympe — Shared Package" },
+  { site: "krem-chympe", packageKey: "privatePackage", label: "Private Tour", button: "🌊 Krem Chympe — Private Tour" },
+  { site: "wilderness-expedition", packageKey: "sharedTour", label: "Expedition Package", button: "🥾 Wilderness — Expedition Package" },
+];
+
+async function chooseReferralPackage(env, chatId, site, packageKey) {
+  const opt = REFERRAL_PACKAGES.find((o) => o.site === site && o.packageKey === packageKey);
+  if (!opt) return startReferralFlow(env, chatId); // stale / unknown button — start over
+  await setSession(env, chatId, {
+    referral: { site: opt.site, packageKey: opt.packageKey, packageLabel: opt.label },
+    awaiting: { type: "refName" },
+  });
+  await tgSendMessage(env, chatId, `<b>${SITE_LABELS[opt.site] || opt.site} — ${opt.label}</b>\n\nGuest's name?`, {
+    reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
+  });
 }
 
 async function chooseReferralSite(env, chatId, site) {
@@ -3089,14 +3113,68 @@ async function handleReferralAwaitedInput(env, chatId, session, msg, type) {
       return;
     }
     session.referral.originalAmount = Math.round(amount);
-    session.awaiting = { type: "refDiscount" };
+
+    // Krem Chympe's Private Tour has an optional 4x4 jeep that is NOT
+    // discounted unless the admin asks for it, so ask how much of this
+    // price is the jeep. The Shared Package has no 4x4, and Wilderness
+    // Expedition bundles it into its flat per-person price, so nothing is
+    // carved out for those two — go straight on.
+    if (session.referral.site === "krem-chympe" && session.referral.packageKey !== "sharedTour") {
+      session.awaiting = { type: "refFourByFour" };
+      await setSession(env, chatId, session);
+      await tgSendMessage(
+        env,
+        chatId,
+        `How much of that ₹${session.referral.originalAmount} is the <b>4x4 jeep</b>? (numbers only — send <code>0</code> if this package has no 4x4)\n\nThe 4x4 is left out of the discount unless you choose to include it.`,
+        { reply_markup: kb([[btn("❌ Cancel", "refcancel")]]) }
+      );
+      return;
+    }
+
+    session.referral.fourByFourAmount = 0;
+    session.referral.includeFourByFour = false;
+    await askReferralDiscount(env, chatId, session);
+    return;
+  }
+
+  if (type === "refFourByFourChoice") {
+    // Waiting on a button tap — typed text is just a nudge to use them.
+    await tgSendMessage(env, chatId, "Please tap one of the buttons above to choose whether the 4x4 is discounted, or tap Cancel.", {
+      reply_markup: kb([
+        [btn("🚫 No — leave 4x4 out (default)", "ref4x4:no")],
+        [btn("✅ Yes — include 4x4 in the discount", "ref4x4:yes")],
+        [btn("❌ Cancel", "refcancel")],
+      ]),
+    });
+    return;
+  }
+
+  if (type === "refFourByFour") {
+    const raw = text.replace(/[^0-9.]/g, "");
+    const fourByFour = raw === "" ? NaN : Math.round(Number(raw));
+    if (!Number.isFinite(fourByFour) || fourByFour < 0 || fourByFour > session.referral.originalAmount) {
+      await tgSendMessage(env, chatId, `Send just the 4x4 amount in ₹ (between 0 and ${session.referral.originalAmount}), e.g. <code>4000</code> — or <code>0</code> if there's no 4x4.`, {
+        reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
+      });
+      return;
+    }
+    session.referral.fourByFourAmount = fourByFour;
+    session.referral.includeFourByFour = false;
+
+    if (fourByFour === 0) {
+      await askReferralDiscount(env, chatId, session);
+      return;
+    }
+
+    session.awaiting = { type: "refFourByFourChoice" };
     await setSession(env, chatId, session);
-    await tgSendMessage(
-      env,
-      chatId,
-      "Discount for this guest? Reply with a percent like <code>10%</code>, or a flat ₹ amount like <code>500</code>.",
-      { reply_markup: kb([[btn("❌ Cancel", "refcancel")]]) }
-    );
+    await tgSendMessage(env, chatId, `Should the discount also apply to the 4x4 (₹${fourByFour})?`, {
+      reply_markup: kb([
+        [btn("🚫 No — leave 4x4 out (default)", "ref4x4:no")],
+        [btn("✅ Yes — include 4x4 in the discount", "ref4x4:yes")],
+        [btn("❌ Cancel", "refcancel")],
+      ]),
+    });
     return;
   }
 
@@ -3123,6 +3201,28 @@ async function handleReferralAwaitedInput(env, chatId, session, msg, type) {
     });
     return;
   }
+}
+
+// Shared "how much discount?" prompt — the last step of the referral flow.
+async function askReferralDiscount(env, chatId, session) {
+  session.awaiting = { type: "refDiscount" };
+  await setSession(env, chatId, session);
+  await tgSendMessage(
+    env,
+    chatId,
+    "Discount for this guest? Reply with a percent like <code>10%</code>, or a flat ₹ amount like <code>500</code>.",
+    { reply_markup: kb([[btn("❌ Cancel", "refcancel")]]) }
+  );
+}
+
+// Button press: include (or not) the 4x4 in this card's discount.
+async function chooseReferralFourByFour(env, chatId, include) {
+  const session = await getSession(env, chatId);
+  if (!session || !session.referral || session.awaiting?.type !== "refFourByFourChoice") {
+    return sendDiscountsMenu(env, chatId); // stale button — the flow was already finished/cancelled
+  }
+  session.referral.includeFourByFour = include === true;
+  return askReferralDiscount(env, chatId, session);
 }
 
 async function sendSalePackagePicker(env, chatId, site) {
