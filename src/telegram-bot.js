@@ -52,6 +52,7 @@ import { isRateLimitExempt, setRateLimitExempt, clearRateLimitExempt, listRateLi
 // endpoints use (see status-store.js) — keeps the admin bot's view of a
 // booking's status from ever disagreeing with what the visitor sees.
 import { getStatus, setStatus } from "./status-store.js";
+import { createReferralCode, sendReferralCard, normalizeMobile } from "./referrals.js";
 
 // The Worker's own public URL — used to build the /media-video proxy
 // link an uploaded background video is served from (see
@@ -1784,6 +1785,11 @@ async function handleCallback(env, chatId, messageId, data, userId) {
   if (action === "salepick") return sendSalePackagePicker(env, chatId, rest[0]);
   if (action === "seasontoggle") return toggleSeasonal(env, chatId, Number(rest[0]));
 
+  // ---- 🎁 referral card ----
+  if (action === "refcard") return startReferralFlow(env, chatId);
+  if (action === "refsite") return chooseReferralSite(env, chatId, rest.join(":"));
+  if (action === "refcancel") return cancelReferralFlow(env, chatId);
+
   return sendMainMenu(env, chatId);
 }
 
@@ -2263,6 +2269,13 @@ async function resetOneField(env, chatId, key) {
 
 async function handleAwaitedInput(env, chatId, session, msg) {
   const { awaiting } = session;
+
+  if (
+    awaiting.type === "refPackage" || awaiting.type === "refName" || awaiting.type === "refPeople" ||
+    awaiting.type === "refMobile" || awaiting.type === "refAmount" || awaiting.type === "refDiscount"
+  ) {
+    return handleReferralAwaitedInput(env, chatId, session, msg, awaiting.type);
+  }
 
   if (awaiting.type === "eraBulk") {
     const text = (msg.text ?? "").trim();
@@ -2966,10 +2979,150 @@ const SALE_PRESETS = [0, 5, 10, 15, 20, 25, 30];
 export async function sendDiscountsMenu(env, chatId) {
   const rows = [
     [btn("🏷️ Put a package on sale", "salepick:krem-chympe")],
+    [btn("🎁 Generate Referral Card", "refcard")],
     [btn("📋 Full discounts editor (codes, bulk tiers, seasons)", "site:discounts:global")],
     [btn("⬅️ Main Menu", "home")],
   ];
   await tgSendMessage(env, chatId, "💰 <b>Discounts & Sales</b>", { reply_markup: kb(rows) });
+}
+
+// ---------------- 🎁 REFERRAL CARD (guided flow) ----------------
+// A short back-and-forth (site -> package -> guest name -> number of
+// people -> mobile number -> price -> discount) that ends with a unique,
+// single-use code saved into the private referrals:global doc (NOT
+// discounts:global, which the website serves publicly) and a shareable
+// card (logo + offer details) sent back to the admin to forward on
+// WhatsApp/Telegram. The code only unlocks on the booking form for the
+// mobile number entered here, and only discounts as many guests as this
+// card was made for. See referrals.js for code generation, matching and
+// card rendering.
+
+async function startReferralFlow(env, chatId) {
+  // Only the two booking sites have a referral box — the home site has
+  // no booking form, so a code for it could never be used.
+  const rows = SITES.filter((s) => s !== "root").map((s) => [btn(SITE_LABELS[s] || s, `refsite:${s}`)]);
+  rows.push([btn("❌ Cancel", "refcancel")]);
+  await tgSendMessage(env, chatId, "🎁 <b>Referral Card</b>\n\nWhich site/destination is this for?", { reply_markup: kb(rows) });
+}
+
+async function chooseReferralSite(env, chatId, site) {
+  await setSession(env, chatId, { referral: { site }, awaiting: { type: "refPackage" } });
+  await tgSendMessage(env, chatId, `Package name for <b>${SITE_LABELS[site] || site}</b>?\n\nExample: <code>Private Package</code> or <code>Wilderness Expedition — 6D/5N</code>`, {
+    reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
+  });
+}
+
+async function cancelReferralFlow(env, chatId) {
+  await clearSession(env, chatId);
+  await sendDiscountsMenu(env, chatId);
+}
+
+// Called from handleAwaitedInput for awaiting.type in
+// {refPackage, refName, refAmount, refDiscount} — kept together here
+// since they're one linear conversation.
+async function handleReferralAwaitedInput(env, chatId, session, msg, type) {
+  const text = (msg.text ?? "").trim();
+  if (!text) {
+    await tgSendMessage(env, chatId, "Please send some text, or tap Cancel.", { reply_markup: kb([[btn("❌ Cancel", "refcancel")]]) });
+    return;
+  }
+
+  if (type === "refPackage") {
+    session.referral.packageLabel = text;
+    session.awaiting = { type: "refName" };
+    await setSession(env, chatId, session);
+    await tgSendMessage(env, chatId, "Guest's name?", { reply_markup: kb([[btn("❌ Cancel", "refcancel")]]) });
+    return;
+  }
+
+  if (type === "refName") {
+    session.referral.visitorName = text;
+    session.awaiting = { type: "refPeople" };
+    await setSession(env, chatId, session);
+    await tgSendMessage(env, chatId, "How many people is this card for? (a whole number, e.g. <code>1</code>)\n\nThe discount will only apply to this many guests — anyone booked beyond that pays the normal price.", {
+      reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
+    });
+    return;
+  }
+
+  if (type === "refPeople") {
+    const people = Number(text);
+    if (!Number.isInteger(people) || people < 1 || people > 100) {
+      await tgSendMessage(env, chatId, "Send a whole number of people between 1 and 100, e.g. <code>2</code>.", {
+        reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
+      });
+      return;
+    }
+    session.referral.people = people;
+    session.awaiting = { type: "refMobile" };
+    await setSession(env, chatId, session);
+    await tgSendMessage(env, chatId, "Guest's mobile number? (the same number they'll enter as their WhatsApp number on the booking form — e.g. <code>9876543210</code> or <code>+91 98765 43210</code>)\n\nThe code will only unlock for this number.", {
+      reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
+    });
+    return;
+  }
+
+  if (type === "refMobile") {
+    const mobile = normalizeMobile(text);
+    if (!mobile) {
+      await tgSendMessage(env, chatId, "That doesn't look like a valid mobile number — I need at least 10 digits. Try again, e.g. <code>9876543210</code>.", {
+        reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
+      });
+      return;
+    }
+    session.referral.mobile = mobile;
+    session.awaiting = { type: "refAmount" };
+    const n = session.referral.people;
+    await setSession(env, chatId, session);
+    await tgSendMessage(env, chatId, `Full package price for ${n} guest${n === 1 ? "" : "s"} together, in ₹ (numbers only, e.g. <code>7500</code>)?`, {
+      reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
+    });
+    return;
+  }
+
+  if (type === "refAmount") {
+    const amount = Number(text.replace(/[^0-9.]/g, ""));
+    if (!amount || amount <= 0) {
+      await tgSendMessage(env, chatId, "That doesn't look like a valid amount. Send just the number, e.g. <code>7500</code>.", {
+        reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
+      });
+      return;
+    }
+    session.referral.originalAmount = Math.round(amount);
+    session.awaiting = { type: "refDiscount" };
+    await setSession(env, chatId, session);
+    await tgSendMessage(
+      env,
+      chatId,
+      "Discount for this guest? Reply with a percent like <code>10%</code>, or a flat ₹ amount like <code>500</code>.",
+      { reply_markup: kb([[btn("❌ Cancel", "refcancel")]]) }
+    );
+    return;
+  }
+
+  if (type === "refDiscount") {
+    const isPercent = /%\s*$/.test(text);
+    const value = Number(text.replace(/[^0-9.]/g, ""));
+    if (!value || value <= 0 || (isPercent && value > 100)) {
+      await tgSendMessage(env, chatId, "Send a valid percent (e.g. <code>10%</code>) or flat ₹ amount (e.g. <code>500</code>).", {
+        reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
+      });
+      return;
+    }
+
+    const referral = await createReferralCode(env, {
+      ...session.referral,
+      discountType: isPercent ? "percent" : "flat",
+      discountValue: Math.round(value),
+    });
+
+    await clearSession(env, chatId);
+    await sendReferralCard(env, chatId, referral);
+    await tgSendMessage(env, chatId, `✅ Code is live — it unlocks only for the mobile number ending ${referral.mobile.slice(-4)}, covers ${referral.people} guest${referral.people === 1 ? "" : "s"}, and works once.`, {
+      reply_markup: kb([[btn("🎁 Make Another", "refcard")], [btn("⬅️ Main Menu", "home")]]),
+    });
+    return;
+  }
 }
 
 async function sendSalePackagePicker(env, chatId, site) {

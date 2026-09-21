@@ -17,6 +17,12 @@
  *   GET  /api/highlights?site=...
  *   GET  /api/discounts
  *   POST /api/calculate-price   { site, packageKey, unitPrice, persons, addons, dateISO, code }
+ *   POST /api/referral-check    { site, mobile, name }        -> { eligible }
+ *   POST /api/referral-validate { site, code, mobile, name }  -> { valid, percent|flat, cardPeople }
+ *                                (admin-generated, single-use referral codes — see referrals.js and
+ *                                 referral-api.js. The booking form only shows its code box when
+ *                                 the visitor's mobile number matches a live card, and only accepts
+ *                                 the code together with that same number.)
  *   GET  /media/:site/:key      admin-uploaded photo, proxied from Telegram
  *
  * ERA AI — the visitor-facing hybrid AI + human-support chat assistant
@@ -85,6 +91,7 @@ import { createOrder, getOrder, handlePaymentWebhook } from "./payments.js";
 import { tgSendMessage } from "./telegram.js";
 import { securityGate, withSecurityHeaders, secureCompare, isBlocked, adminUnblock, getClientIp } from "./security.js";
 import { isManualModeEnabled } from "./manual-mode.js";
+import { handleReferralCheck, handleReferralValidate } from "./referral-api.js";
 // The Durable Object class behind booking/refund status (see
 // status-store.js) — Workers requires DO classes to be exported from
 // the main entry module, which is this file (see wrangler.toml's
@@ -204,6 +211,8 @@ async function route(request, env, ctx, url) {
       if (url.pathname === "/api/bootstrap" && request.method === "GET") return handleGetBootstrap(request, url, env, ctx);
       if (url.pathname === "/api/discounts" && request.method === "GET") return handleGetDiscounts(request, env, ctx);
       if (url.pathname === "/api/calculate-price" && request.method === "POST") return handleCalculatePrice(request, env);
+      if (url.pathname === "/api/referral-check" && request.method === "POST") return handleReferralCheck(request, env);
+      if (url.pathname === "/api/referral-validate" && request.method === "POST") return handleReferralValidate(request, env);
       if (url.pathname === "/api/admin/reset-images" && request.method === "POST") return handleAdminResetImages(request, env);
       if (url.pathname.startsWith("/media/") && request.method === "GET") return handleMedia(request, url, env, ctx);
       if (url.pathname.startsWith("/media-video/") && request.method === "GET") return handleVideoMedia(request, url, env);

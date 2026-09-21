@@ -194,6 +194,8 @@ const ROUTE_LIMITS = [
   [/^\/api\/era\/message$/, 30, 60],
   [/^\/api\/era\/typing$/, 90, 60],
   [/^\/api\/calculate-price$/, 60, 60],
+  [/^\/api\/referral-check$/, 30, 60],
+  [/^\/api\/referral-validate$/, 20, 60], // brute-forcing codes is pointless without the matching mobile, but cap it anyway
   [/^\/api\/visit$/, 60, 60],
   [/^\/api\/tap$/, 60, 60],
   [/^\/api\/admin\//, 20, 60], // secret-protected, but still capped against brute force

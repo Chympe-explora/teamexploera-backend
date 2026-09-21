@@ -38,6 +38,7 @@ import { getEligibleGuides, assignBookingToGuide, getGuide, getGuideByChatId } f
 // up" on the visitor's side).
 import { getStatus, setStatus, getRefundStatus, setRefundStatus } from "./status-store.js";
 import { honeypotTripped } from "./security.js";
+import { verifyAndClaimForBooking, releaseReferralClaim, markRedeemedInDoc, referralSummaryLine } from "./referrals.js";
 import { isManualModeEnabled } from "./manual-mode.js";
 
 export function corsHeaders(env) {
@@ -395,6 +396,29 @@ export async function handleSubmit(request, env, ctx) {
 
   const bookingId = newId();
 
+  // 🎁 Referral code (see referrals.js). If this booking claims one, it
+  // is re-validated HERE against the visitor's name + mobile number (the
+  // browser's word is never taken for it), the discount it claims is
+  // checked against what that card can actually give, and the code is
+  // claimed atomically — first booking to reach this line wins, and the
+  // code is expired for everyone else from that moment on. Nothing has
+  // been sent to Telegram yet, so a refusal here is clean: no message,
+  // no booking, and the visitor's browser is told exactly why.
+  const referralClaim = await verifyAndClaimForBooking(env, { siteId, bookingId, data });
+  if (!referralClaim.ok) {
+    return json({ ok: false, error: referralClaim.error, referralError: referralClaim.referralError }, env, referralClaim.status);
+  }
+  const referral = referralClaim.referral;
+  const releaseReferral = () => (referral ? releaseReferralClaim(env, referral.code, bookingId) : Promise.resolve());
+  if (referral) {
+    // From here on the SERVER's numbers are the record, not the browser's.
+    const summary = referralSummaryLine(referral);
+    data.referralCode = referral.code;
+    data.referralDiscount = referral.discount;
+    if (data.message) data.message = `${data.message}\n\n🎁 ${summary} ✅ (verified)`;
+    else data.referralNote = summary;
+  }
+
   // If this visitor already uploaded a payment receipt (during the Pay
   // Now step), re-attach that SAME Telegram file (no re-upload) to this
   // booking message so whoever handles it sees the receipt and the
@@ -463,6 +487,7 @@ export async function handleSubmit(request, env, ctx) {
   const eligibleGuides = manualMode ? [] : siteId ? await getEligibleGuides(env, siteId, packageKey) : [];
 
   if (!eligibleGuides.length && !env.TELEGRAM_CHAT_ID) {
+    await releaseReferral(); // the booking never reached anyone — give the code back
     return json({ ok: false, error: "No Telegram chat is configured to receive bookings." }, env, 502);
   }
 
@@ -503,15 +528,17 @@ export async function handleSubmit(request, env, ctx) {
       await setStatus(env, bookingId, "awaiting_admin");
       await env.BOOKINGS.put(
         `booking:${bookingId}`,
-        JSON.stringify({ sessionId, siteId, data, assignedGuideId: null, receipt: receipt || null, pendingPost: true }),
+        JSON.stringify({ sessionId, siteId, data, assignedGuideId: null, receipt: receipt || null, pendingPost: true, referral: referral || null }),
         { expirationTtl: 60 * 60 * 24 * 30 }
       );
       if (sessionId) {
         await env.BOOKINGS.put(`pendingbooking:${sessionId}`, bookingId, { expirationTtl: 60 * 60 * 24 * 30 });
         await env.BOOKINGS.delete(`receiptfile:${sessionId}`).catch(() => {});
       }
-      return json({ ok: true, bookingId, manualMode: true }, env);
+      if (referral) await markRedeemedInDoc(env, referral.code, bookingId, referral.discount);
+      return json({ ok: true, bookingId, manualMode: true, referral: referral ? { code: referral.code, discount: referral.discount, coveredPeople: referral.coveredPeople, totalPersons: referral.totalPersons } : null }, env);
     }
+    await releaseReferral(); // nobody received this booking — the code is not spent
     const firstError = sendResults.find((r) => r && r.description);
     return json({ ok: false, error: (firstError && firstError.description) || "telegram send failed" }, env, 502);
   }
@@ -568,6 +595,7 @@ export async function handleSubmit(request, env, ctx) {
         eligibleGuideIds: eligibleGuides.map((g) => g.id),
         declinedGuideIds: [],
         receipt: receipt || null,
+        referral: referral || null,
       }),
       { expirationTtl: 60 * 60 * 24 * 30 }
     );
@@ -578,6 +606,8 @@ export async function handleSubmit(request, env, ctx) {
       await env.BOOKINGS.put(`pendingbooking:${sessionId}`, bookingId, { expirationTtl: 60 * 60 * 24 * 30 });
       await env.BOOKINGS.delete(`receiptfile:${sessionId}`).catch(() => {});
     }
+    // Mirror "this code is now used" onto the card in the admin's record.
+    if (referral) await markRedeemedInDoc(env, referral.code, bookingId, referral.discount);
   }
 
   if (ctx && typeof ctx.waitUntil === "function") {
@@ -586,7 +616,15 @@ export async function handleSubmit(request, env, ctx) {
     await sendInfoAndPersist();
   }
 
-  return json({ ok: true, bookingId, manualMode }, env);
+  return json(
+    {
+      ok: true,
+      bookingId,
+      manualMode,
+      referral: referral ? { code: referral.code, discount: referral.discount, coveredPeople: referral.coveredPeople, totalPersons: referral.totalPersons } : null,
+    },
+    env
+  );
 }
 
 // Called by the central webhook dispatcher in index.js for callback
@@ -607,24 +645,32 @@ export async function handleStatusCheck(bookingId, env) {
   const status = await getStatus(env, bookingId);
   let guideName = null;
   let guidePhone = null;
-  if (status === "confirmed") {
-    const bookingRaw = await env.BOOKINGS.get(`booking:${bookingId}`);
-    if (bookingRaw) {
-      try {
-        const booking = JSON.parse(bookingRaw);
-        if (booking.assignedGuideId) {
-          const guide = await getGuide(env, booking.assignedGuideId);
-          if (guide) {
-            guideName = guide.name;
-            guidePhone = guide.phone || null;
-          }
-        }
-      } catch (e) {
-        // malformed record — just fall back to no guide contact info
-      }
+  // Referral code used on this booking (if any) — sent on EVERY status,
+  // so the visitor's confirmed AND rejected screens can both say "this
+  // booking used code X and got ₹Y off". One KV read serves both this
+  // and the guide lookup below.
+  let referral = null;
+  const bookingRaw = await env.BOOKINGS.get(`booking:${bookingId}`);
+  let booking = null;
+  if (bookingRaw) {
+    try {
+      booking = JSON.parse(bookingRaw);
+    } catch (e) {
+      // malformed record — just fall back to no guide/referral info
     }
   }
-  return json({ status, guideName, guidePhone }, env);
+  if (booking && booking.referral) {
+    const r = booking.referral;
+    referral = { code: r.code, discount: r.discount, coveredPeople: r.coveredPeople, totalPersons: r.totalPersons };
+  }
+  if (status === "confirmed" && booking && booking.assignedGuideId) {
+    const guide = await getGuide(env, booking.assignedGuideId);
+    if (guide) {
+      guideName = guide.name;
+      guidePhone = guide.phone || null;
+    }
+  }
+  return json({ status, guideName, guidePhone, referral }, env);
 }
 
 // Edits ONE Telegram copy of a booking message (text or media-caption)
@@ -777,7 +823,21 @@ export async function handleBookingCallback(cb, env) {
     // — nobody can double-act on an already-settled booking from a
     // different chat.
     if (msgRefs.length && cb.message) {
-      const badge = newStatus === "confirmed" ? "\u2705 CONFIRMED" : "\u274c REJECTED";
+      // If this booking used a referral code, the badge on every copy
+      // says so — on a confirmation AND on a rejection (a rejected
+      // booking still spent the code; the admin can issue a new card).
+      let referralBadge = "";
+      try {
+        const bRaw = await env.BOOKINGS.get(`booking:${bookingId}`);
+        const r = bRaw ? JSON.parse(bRaw).referral : null;
+        if (r) {
+          referralBadge =
+            newStatus === "confirmed"
+              ? `\n\ud83c\udf81 ${referralSummaryLine(r)}`
+              : `\n\ud83c\udf81 ${referralSummaryLine(r)} \u2014 code is now expired`;
+        }
+      } catch (e) { /* no referral info — plain badge */ }
+      const badge = (newStatus === "confirmed" ? "\u2705 CONFIRMED" : "\u274c REJECTED") + referralBadge;
       await Promise.all(msgRefs.map((ref) => stampBookingMessage(env, ref.chatId, ref.messageId, cb, badge)));
     }
 

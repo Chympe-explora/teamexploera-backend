@@ -43,6 +43,16 @@ const STATUS_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days — matches the previou
 export class BookingStatusDO {
   constructor(state) {
     this.state = state;
+    // Serialises claim/release operations (see POST/DELETE below) so the
+    // read-then-write inside them can never interleave with another
+    // request's, whatever the runtime's gating rules are.
+    this.lock = Promise.resolve();
+  }
+
+  serialise(fn) {
+    const run = this.lock.then(fn);
+    this.lock = run.catch(() => {});
+    return run;
   }
 
   // Simple key/value fetch handler. The key is passed as the path
@@ -67,6 +77,42 @@ export class BookingStatusDO {
       return new Response(JSON.stringify({ ok: true }), {
         headers: { "content-type": "application/json" },
       });
+    }
+
+    // POST = atomic "claim once". The first caller to reach a key wins
+    // and stores its value; every later caller gets { claimed: false }
+    // plus whatever the winner stored. Because this whole handler runs
+    // inside ONE Durable Object instance (and there is no await between
+    // the read and the write that another request could interleave
+    // with), two visitors submitting the same single-use referral code
+    // at the same instant can never both succeed — which plain KV
+    // (get-then-put, eventually consistent) cannot guarantee.
+    if (request.method === "POST") {
+      const { value } = await request.json();
+      const result = await this.serialise(async () => {
+        const existing = await this.state.storage.get(key);
+        if (existing !== undefined && existing !== null) return { claimed: false, value: existing };
+        await this.state.storage.put(key, value);
+        return { claimed: true, value };
+      });
+      return new Response(JSON.stringify(result), { headers: { "content-type": "application/json" } });
+    }
+
+    // DELETE = release a claim, but only if it is still held by the
+    // caller that made it (so a slow/failed request can never free a
+    // claim that a different booking has since legitimately taken).
+    if (request.method === "DELETE") {
+      let ifValue = null;
+      try { ({ ifValue } = await request.json()); } catch (e) { /* no body = unconditional */ }
+      const released = await this.serialise(async () => {
+        const existing = await this.state.storage.get(key);
+        if (existing !== undefined && existing !== null && (ifValue === null || existing === ifValue)) {
+          await this.state.storage.delete(key);
+          return true;
+        }
+        return false;
+      });
+      return new Response(JSON.stringify({ released }), { headers: { "content-type": "application/json" } });
     }
 
     return new Response(JSON.stringify({ error: "method not allowed" }), { status: 405 });
@@ -120,4 +166,57 @@ export async function getRefundStatus(env, bookingId) {
 
 export async function setRefundStatus(env, bookingId, value) {
   return writeKey(env, `refundstatus:${bookingId}`, value);
+}
+
+// ---------------------------------------------------------------------
+// One-time claims (used by referrals.js for single-use referral codes).
+// Same Durable Object as the statuses above, but with an atomic
+// first-writer-wins operation instead of read/write. Falls back to a
+// (non-atomic) KV get-then-put only if the DO binding is missing, so
+// nothing hard-crashes — but the "two people at the exact same moment"
+// guarantee only holds with the BOOKING_STATUS binding deployed.
+// ---------------------------------------------------------------------
+
+// Returns { claimed: true } if this call took the claim, or
+// { claimed: false, value } (value = whoever holds it) if it was taken.
+export async function claimOnce(env, key, value) {
+  const s = stub(env);
+  if (s) {
+    const res = await s.fetch(`https://status-store/${encodeURIComponent(key)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ value }),
+    });
+    return res.json();
+  }
+  const existing = await env.BOOKINGS.get(key);
+  if (existing) return { claimed: false, value: existing };
+  await env.BOOKINGS.put(key, value);
+  return { claimed: true, value };
+}
+
+// Who holds this claim right now (or null).
+export async function getClaim(env, key) {
+  const s = stub(env);
+  if (s) {
+    const res = await s.fetch(`https://status-store/${encodeURIComponent(key)}`);
+    const { value } = await res.json();
+    return value ?? null;
+  }
+  return (await env.BOOKINGS.get(key)) || null;
+}
+
+// Frees a claim, but only if `ifValue` still holds it.
+export async function releaseClaim(env, key, ifValue) {
+  const s = stub(env);
+  if (s) {
+    await s.fetch(`https://status-store/${encodeURIComponent(key)}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ifValue: ifValue ?? null }),
+    });
+    return;
+  }
+  const existing = await env.BOOKINGS.get(key);
+  if (existing && (ifValue == null || existing === ifValue)) await env.BOOKINGS.delete(key);
 }

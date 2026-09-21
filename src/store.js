@@ -64,6 +64,7 @@ const DOC_TITLES = {
   images: "🖼️ IMAGE MAP (key → telegram file_id)",
   videos: "🎬 BACKGROUND VIDEOS (key → telegram file_id)",
   ratings: "⭐ VISITOR RATINGS",
+  referrals: "🎁 REFERRAL CODES (private — never served to the website)",
 };
 
 export async function getDoc(env, docKey, fallback) {
