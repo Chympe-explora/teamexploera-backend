@@ -262,40 +262,17 @@ export const SCHEMA_DEFAULTS = {
       },
       "weatherLocation": {
         "enabled": true,
-        "title": "Live Weather & Location",
-        "subtitle": "Current conditions at our trekking base",
+        "title": "Our Trekking Base",
+        "subtitle": "Find us on the map",
         "locationName": "Khaddum Village, East Jaintia Hills, Meghalaya",
         "latitude": 25.18,
         "longitude": 92.48,
         "zoom": 12,
         "mapHeightPx": 260,
         "openInMapsLabel": "Open in Maps",
-        "forecastLabel": "Weather Forecast"
-      },
-      "trekRoutes": {
-        "title": "Trek Routes",
-        "items": [
-          {
-            "enabled": true,
-            "label": "Krem Chympe Waterfall & Cave",
-            "startName": "Khaddum Village (Trek Start)",
-            "startLatitude": 25.18,
-            "startLongitude": 92.48,
-            "endName": "Krem Chympe Cave & Chympe Waterfall",
-            "endLatitude": 25.18,
-            "endLongitude": 92.48
-          },
-          {
-            "enabled": true,
-            "label": "Wilderness Expedition",
-            "startName": "Khaddum Village (Trek Start)",
-            "startLatitude": 25.18,
-            "startLongitude": 92.48,
-            "endName": "Expedition Campsite",
-            "endLatitude": 25.18,
-            "endLongitude": 92.48
-          }
-        ]
+        "forecastLabel": "Weather Forecast",
+        "mapTilerApiKey": "YOUR_MAPTILER_API_KEY",
+        "mapStyle": "outdoor-v2"
       },
       "destinations": {
         "title": "Destinations",
