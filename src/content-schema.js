@@ -158,6 +158,25 @@ export const SCHEMA_DEFAULTS = {
             "borderRadius": 24
           }
         },
+        "weather": {
+          "background": {
+            "type": "transparent",
+            "opacity": 100
+          },
+          "overlay": {
+            "enabled": false,
+            "color": "#000000",
+            "opacity": 30,
+            "gradient": false
+          },
+          "glass": {
+            "enabled": false,
+            "opacity": 20,
+            "blur": 12,
+            "borderOpacity": 20,
+            "borderRadius": 24
+          }
+        },
         "footer": {
           "background": {
             "type": "transparent",
@@ -240,6 +259,18 @@ export const SCHEMA_DEFAULTS = {
         "googleRatingText": "Visitors Rating 4.9",
         "safetyCertifiedText": "Safety Certified",
         "ecoTourismText": "Eco Tourism"
+      },
+      "weatherLocation": {
+        "enabled": true,
+        "title": "Live Weather & Location",
+        "subtitle": "Current conditions at our trekking base",
+        "locationName": "Khaddum Village, East Jaintia Hills, Meghalaya",
+        "latitude": 25.18,
+        "longitude": 92.48,
+        "zoom": 12,
+        "mapHeightPx": 260,
+        "openInMapsLabel": "Open in Maps",
+        "forecastLabel": "Weather Forecast"
       },
       "destinations": {
         "title": "Destinations",
