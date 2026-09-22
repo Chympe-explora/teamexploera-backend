@@ -272,6 +272,31 @@ export const SCHEMA_DEFAULTS = {
         "openInMapsLabel": "Open in Maps",
         "forecastLabel": "Weather Forecast"
       },
+      "trekRoutes": {
+        "title": "Trek Routes",
+        "items": [
+          {
+            "enabled": true,
+            "label": "Krem Chympe Waterfall & Cave",
+            "startName": "Khaddum Village (Trek Start)",
+            "startLatitude": 25.18,
+            "startLongitude": 92.48,
+            "endName": "Krem Chympe Cave & Chympe Waterfall",
+            "endLatitude": 25.18,
+            "endLongitude": 92.48
+          },
+          {
+            "enabled": true,
+            "label": "Wilderness Expedition",
+            "startName": "Khaddum Village (Trek Start)",
+            "startLatitude": 25.18,
+            "startLongitude": 92.48,
+            "endName": "Expedition Campsite",
+            "endLatitude": 25.18,
+            "endLongitude": 92.48
+          }
+        ]
+      },
       "destinations": {
         "title": "Destinations",
         "subtitle": "Two ways to explore Meghalaya with us",
