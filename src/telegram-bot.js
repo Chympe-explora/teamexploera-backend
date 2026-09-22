@@ -1790,7 +1790,9 @@ async function handleCallback(env, chatId, messageId, data, userId) {
   if (action === "refpkg") return chooseReferralPackage(env, chatId, rest[0], rest[1]);
   if (action === "refsite") return chooseReferralSite(env, chatId, rest.join(":")); // older buttons still in chat
   if (action === "refcancel") return cancelReferralFlow(env, chatId);
-  if (action === "refextranone") return skipReferralExtras(env, chatId);
+  if (action === "refopt") return toggleReferralPkgOption(env, chatId, messageId, rest[0]);
+  if (action === "refoptdone") return finishReferralPkgOptions(env, chatId, messageId);
+  if (action === "refqtynone") return skipReferralQty(env, chatId);
   if (action === "refextratoggle") return toggleReferralExtra(env, chatId, messageId, Number(rest[0]));
   if (action === "refextradone") return finishReferralExtras(env, chatId, messageId);
 
@@ -2276,7 +2278,7 @@ async function handleAwaitedInput(env, chatId, session, msg) {
 
   if (
     awaiting.type === "refPackage" || awaiting.type === "refName" || awaiting.type === "refPeople" ||
-    awaiting.type === "refMobile" || awaiting.type === "refAmount" || awaiting.type === "refExtras" ||
+    awaiting.type === "refMobile" || awaiting.type === "refPkgOptions" || awaiting.type === "refQty" ||
     awaiting.type === "refExtrasChoice" || awaiting.type === "refDiscount"
   ) {
     return handleReferralAwaitedInput(env, chatId, session, msg, awaiting.type);
@@ -2993,14 +2995,20 @@ export async function sendDiscountsMenu(env, chatId) {
 
 // ---------------- 🎁 REFERRAL CARD (guided flow) ----------------
 // A short back-and-forth (site -> package -> guest name -> number of
-// people -> mobile number -> price -> discount) that ends with a unique,
-// single-use code saved into the private referrals:global doc (NOT
-// discounts:global, which the website serves publicly) and a shareable
-// card (logo + offer details) sent back to the admin to forward on
-// WhatsApp/Telegram. The code only unlocks on the booking form for the
-// mobile number entered here, and only discounts as many guests as this
-// card was made for. See referrals.js for code generation, matching and
-// card rendering.
+// people -> mobile number -> which parts apply -> quantities -> discount)
+// that ends with a unique, single-use code saved into the private
+// referrals:global doc (NOT discounts:global, which the website serves
+// publicly) and a shareable card (logo + offer details) sent back to the
+// admin to forward on WhatsApp/Telegram. The code only unlocks on the
+// booking form for the mobile number entered here, and only discounts as
+// many guests as this card was made for. See referrals.js for code
+// generation, matching and card rendering.
+//
+// PRICING IS NEVER TYPED: every ₹ figure on the card is computed from
+// this site's live prices doc (the same numbers under 💰 Edit Prices) —
+// the admin only answers which parts of the package apply (jeep,
+// camping, activities...) and how many of each food/camping item, and
+// startReferralPricing/buildReferralBreakdown below do the maths.
 
 async function startReferralFlow(env, chatId) {
   // Pick the exact package in one tap. The home site has no booking form,
@@ -3044,8 +3052,9 @@ async function cancelReferralFlow(env, chatId) {
 }
 
 // Called from handleAwaitedInput for awaiting.type in
-// {refPackage, refName, refAmount, refDiscount} — kept together here
-// since they're one linear conversation.
+// {refPackage, refName, refPeople, refMobile, refPkgOptions, refQty,
+// refExtrasChoice, refDiscount} — kept together here since they're one
+// linear conversation.
 async function handleReferralAwaitedInput(env, chatId, session, msg, type) {
   const text = (msg.text ?? "").trim();
   if (!text) {
@@ -3097,49 +3106,31 @@ async function handleReferralAwaitedInput(env, chatId, session, msg, type) {
       return;
     }
     session.referral.mobile = mobile;
-    session.awaiting = { type: "refAmount" };
-    const n = session.referral.people;
     await setSession(env, chatId, session);
-    await tgSendMessage(env, chatId, `Full package price for ${n} guest${n === 1 ? "" : "s"} together, in ₹ (numbers only, e.g. <code>7500</code>)?`, {
+    return startReferralPricing(env, chatId, session);
+  }
+
+  if (type === "refPkgOptions") {
+    // Waiting on button taps — typed text is just a nudge to use them.
+    await tgSendMessage(env, chatId, "Tap the buttons above to switch each part on/off, then tap Continue — or Cancel.", {
       reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
     });
     return;
   }
 
-  if (type === "refAmount") {
-    const amount = Number(text.replace(/[^0-9.]/g, ""));
-    if (!amount || amount <= 0) {
-      await tgSendMessage(env, chatId, "That doesn't look like a valid amount. Send just the number, e.g. <code>7500</code>.", {
-        reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
-      });
+  if (type === "refQty") {
+    const fields = referralQtyFields(session);
+    const qtys = parseReferralQty(text, fields);
+    if (qtys === null) {
+      await tgSendMessage(
+        env,
+        chatId,
+        `Couldn't read that. One per line as <code>name: number</code>, matching the names exactly (copy them from the list above), or tap "None of these".`,
+        { reply_markup: kb([[btn("None of these", "refqtynone")], [btn("❌ Cancel", "refcancel")]]) }
+      );
       return;
     }
-    session.referral.originalAmount = Math.round(amount);
-    session.awaiting = { type: "refExtras" };
-    await setSession(env, chatId, session);
-    await tgSendMessage(
-      env,
-      chatId,
-      `Does that ₹${session.referral.originalAmount} include any separately-priced parts — <b>4x4, guide, food, activities, facilities</b>, or anything else? ` +
-      `Those are left OUT of the discount unless you choose to include them next.\n\n` +
-      `Type each one on its own line as <code>name: amount</code>, e.g.:\n` +
-      `<code>4x4: 4000\nguide: 1500\nfood: 800</code>\n\n` +
-      `Or send <code>none</code> to discount the whole price.`,
-      { reply_markup: kb([[btn("None — discount the whole price", "refextranone")], [btn("❌ Cancel", "refcancel")]]) }
-    );
-    return;
-  }
-
-  if (type === "refExtras") {
-    const extras = parseReferralExtras(text, session.referral.originalAmount);
-    if (extras === null) {
-      await tgSendMessage(env, chatId, `Couldn't read that. One per line as <code>name: amount</code> (numbers only, no more than ₹${session.referral.originalAmount} total), or send <code>none</code>.`, {
-        reply_markup: kb([[btn("None — discount the whole price", "refextranone")], [btn("❌ Cancel", "refcancel")]]),
-      });
-      return;
-    }
-    session.referral.extras = extras;
-    return startReferralExtrasChoice(env, chatId, session);
+    return finalizeReferralBreakdown(env, chatId, session, qtys);
   }
 
   if (type === "refExtrasChoice") {
@@ -3187,39 +3178,205 @@ async function askReferralDiscount(env, chatId, session) {
   );
 }
 
-// Parses lines like "4x4: 4000" / "guide 1500" into
-// [{label, amount, included:false}], case-insensitively, one per line.
-// Returns [] for "none"/"no"/"skip", or null if nothing usable was found.
-function parseReferralExtras(text, cap) {
+// ---------------------------------------------------------------------
+// Automatic pricing — the bot already knows every unit price (they're
+// the same numbers the admin sets under 💰 Edit Prices), so instead of
+// typing a lump total and re-typing each add-on's amount, the admin
+// only answers which parts of the package apply and how many of each
+// food/camping item — every ₹ figure is computed from the live prices
+// doc. The result is fed into the SAME include/exclude toggle screen
+// (extrasChoiceMarkup below) used before, so nothing else changes.
+// ---------------------------------------------------------------------
+
+// Kicks off pricing right after the mobile number is collected: loads
+// this site's live prices doc, and either shows the private-package
+// on/off toggles or (Shared Tour/Expedition, which has no such options)
+// goes straight to the food-quantity question.
+async function startReferralPricing(env, chatId, session) {
+  const site = session.referral.site;
+  const { merged: prices } = await loadMerged(env, "prices", site);
+  session.referral._prices = prices;
+
+  if (session.referral.packageKey === "sharedTour") {
+    const { merged: discounts } = await loadMerged(env, "discounts", null);
+    session.referral._salePct = (discounts.saleBySite && discounts.saleBySite[site] && discounts.saleBySite[site][session.referral.packageKey]) || 0;
+  }
+
+  if (session.referral.packageKey === "privatePackage") {
+    session.referral._opts = { jeep: false, adventure: true, camping: false, campingMeals: false };
+    session.awaiting = { type: "refPkgOptions" };
+    await setSession(env, chatId, session);
+    await tgSendMessage(env, chatId, privateOptToggleText(), { reply_markup: privateOptToggleMarkup(session.referral._opts) });
+    return;
+  }
+
+  await setSession(env, chatId, session);
+  return sendReferralQtyPrompt(env, chatId, session);
+}
+
+function privateOptToggleText() {
+  return (
+    "Which parts of the Private Tour is this booking for? Tap to switch each on/off, then Continue.\n\n" +
+    "(Camping swaps the Local Guide fee for the Overnight Guide fee, same as the booking form.)"
+  );
+}
+function privateOptToggleMarkup(opts) {
+  const rows = [
+    [btn(`${opts.jeep ? "✅" : "⬜"} 4x4 Jeep`, "refopt:jeep")],
+    [btn(`${opts.adventure ? "✅" : "⬜"} Adventure Activities`, "refopt:adventure")],
+    [btn(`${opts.camping ? "✅" : "⬜"} Camping (overnight)`, "refopt:camping")],
+  ];
+  if (opts.camping) rows.push([btn(`${opts.campingMeals ? "✅" : "⬜"} Camping Meals`, "refopt:campingMeals")]);
+  rows.push([btn("▶️ Continue", "refoptdone")]);
+  rows.push([btn("❌ Cancel", "refcancel")]);
+  return kb(rows);
+}
+
+async function toggleReferralPkgOption(env, chatId, messageId, field) {
+  const session = await getSession(env, chatId);
+  if (!session || !session.referral || session.awaiting?.type !== "refPkgOptions" || !session.referral._opts) return;
+  const opts = session.referral._opts;
+  if (!(field in opts)) return;
+  opts[field] = !opts[field];
+  if (field === "camping" && !opts.camping) opts.campingMeals = false; // turning camping off clears meals too
+  await setSession(env, chatId, session);
+  await tgEditMessageText(env, chatId, messageId, privateOptToggleText(), { reply_markup: privateOptToggleMarkup(opts) });
+}
+
+async function finishReferralPkgOptions(env, chatId, messageId) {
+  const session = await getSession(env, chatId);
+  if (!session || !session.referral || session.awaiting?.type !== "refPkgOptions") return;
+  return sendReferralQtyPrompt(env, chatId, session);
+}
+
+// The food/camping items this package needs a quantity for, as
+// {key, label} pairs — key is used internally, label is what the admin
+// types back and what ends up on the invoice line.
+function referralQtyFields(session) {
+  const PRICES = session.referral._prices;
+  const fields = [];
+  if (session.referral.packageKey === "privatePackage") {
+    const PP = PRICES.privatePackage || {};
+    (PP.thaliTypes || []).forEach((th) => fields.push({ key: `thali:${th.id}`, label: th.name }));
+    if (session.referral._opts && session.referral._opts.camping) {
+      fields.push({ key: "tents", label: "Camping Tents" });
+      (PRICES.bambooMenu || []).forEach((item) => fields.push({ key: `bamboo:${item.id}`, label: item.name }));
+    }
+  } else {
+    const ST = PRICES.sharedTour || {};
+    (ST.thaliTypes || []).forEach((th) => fields.push({ key: `thali:${th.id}`, label: th.name }));
+  }
+  return fields;
+}
+
+async function sendReferralQtyPrompt(env, chatId, session) {
+  const fields = referralQtyFields(session);
+  session.awaiting = { type: "refQty" };
+  await setSession(env, chatId, session);
+  if (!fields.length) {
+    // Nothing needs a quantity (e.g. no thali types configured) — go
+    // straight to building the breakdown from what's already known.
+    return finalizeReferralBreakdown(env, chatId, session, {});
+  }
+  const list = fields.map((f) => `${f.label}: 0`).join("\n");
+  await tgSendMessage(
+    env,
+    chatId,
+    `How many of each? One per line as <code>name: number</code> (send <code>0</code> or leave a line out for none):\n\n` +
+      `<code>${escapeHtml(list)}</code>`,
+    { reply_markup: kb([[btn("None of these", "refqtynone")], [btn("❌ Cancel", "refcancel")]]) }
+  );
+}
+
+async function skipReferralQty(env, chatId) {
+  const session = await getSession(env, chatId);
+  if (!session || !session.referral || session.awaiting?.type !== "refQty") return;
+  return finalizeReferralBreakdown(env, chatId, session, {});
+}
+
+// Parses "name: number" lines against the known field labels for this
+// package (case-insensitive, exact match). Returns {key: qty, ...}, or
+// null if a line couldn't be matched to a real item.
+function parseReferralQty(text, fields) {
   const t = String(text || "").trim();
-  if (/^(none|no|skip|0)$/i.test(t)) return [];
-  const extras = [];
+  if (/^(none|no|skip|0)$/i.test(t)) return {};
+  const byLabel = new Map(fields.map((f) => [f.label.trim().toLowerCase(), f]));
+  const qtys = {};
   for (const lineRaw of t.split(/\n+/)) {
     const line = lineRaw.trim();
     if (!line) continue;
-    // "name: 4000" / "name - 4000" (preferred) or, failing that, a bare
-    // trailing number ("name 4000") — either way the amount is whatever
-    // digits sit at the end of the line.
-    const m = line.match(/^(.+?)[:\-]\s*₹?\s*([\d,]+(?:\.\d+)?)\s*$/) || line.match(/^(.+?)\s+₹?([\d,]+(?:\.\d+)?)\s*$/);
-    if (!m) continue;
-    const label = m[1].trim().replace(/\s+/g, " ");
-    const amount = Math.round(Number(m[2].replace(/,/g, "")));
-    if (label && Number.isFinite(amount) && amount > 0) extras.push({ label, amount, included: false });
+    const idx = line.lastIndexOf(":");
+    if (idx < 0) return null;
+    const label = line.slice(0, idx).trim().toLowerCase();
+    const num = Number(line.slice(idx + 1).replace(/[^0-9.]/g, ""));
+    const field = byLabel.get(label);
+    if (!field || !Number.isFinite(num) || num < 0) return null;
+    qtys[field.key] = Math.round(num);
   }
-  if (!extras.length) return null;
-  const total = extras.reduce((s, e) => s + e.amount, 0);
-  if (total > cap) {
-    const scale = cap / total;
-    for (const e of extras) e.amount = Math.round(e.amount * scale);
-  }
-  return extras;
+  return qtys;
 }
 
-// The admin tapped "None" instead of typing — same as an empty extras list.
-async function skipReferralExtras(env, chatId) {
-  const session = await getSession(env, chatId);
-  if (!session || !session.referral || session.awaiting?.type !== "refExtras") return;
-  session.referral.extras = [];
+// Turns the admin's on/off + quantity answers into itemized breakdown
+// lines, using ONLY unit prices already stored in this site's prices
+// doc — nothing here is typed by the admin. Every line defaults to
+// excluded from the discount (included:false), same as before; the
+// admin flips the ones they want to include on the next screen.
+function buildReferralBreakdown(session, qtys) {
+  const r = session.referral;
+  const PRICES = r._prices;
+  const lines = [];
+  const push = (label, amount) => {
+    if (amount > 0) lines.push({ label, amount: Math.round(amount), included: false });
+  };
+
+  if (r.packageKey === "privatePackage") {
+    const PP = PRICES.privatePackage || {};
+    const opts = r._opts || {};
+    const people = r.people;
+    if (opts.jeep) push("4x4 Jeep", PP.jeep);
+    if (opts.camping) push("Overnight Guide", PP.overnightGuide);
+    else push("Local Guide", PP.guide);
+    if (opts.adventure) push(`Adventure Activities (${people} people)`, people * PP.adventurePerPerson);
+    (PP.thaliTypes || []).forEach((th) => {
+      const qty = qtys[`thali:${th.id}`] || 0;
+      if (qty > 0) push(`${th.name} x${qty}`, qty * PP.lunchThaliPrice);
+    });
+    if (opts.camping) {
+      const tents = qtys.tents || 0;
+      if (tents > 0) push(`Camping Tents x${tents}`, tents * PP.campingTent);
+      if (opts.campingMeals) push(`Camping Meals (${people} people)`, people * PP.campingMealsPerPerson);
+      (PRICES.bambooMenu || []).forEach((item) => {
+        const qty = qtys[`bamboo:${item.id}`] || 0;
+        if (qty > 0) push(`${item.name} x${qty}`, qty * item.price);
+      });
+    }
+  } else {
+    const ST = PRICES.sharedTour || {};
+    const salePct = r._salePct || 0;
+    const effectivePerPerson = salePct ? Math.round(ST.perPerson * (1 - salePct / 100)) : ST.perPerson;
+    push(`Package (${r.people} × ₹${effectivePerPerson})`, r.people * effectivePerPerson);
+    (ST.thaliTypes || []).forEach((th) => {
+      const qty = qtys[`thali:${th.id}`] || 0;
+      if (qty > 0) push(`${th.name} x${qty}`, qty * ST.lunchThaliPrice);
+    });
+  }
+  return lines;
+}
+
+async function finalizeReferralBreakdown(env, chatId, session, qtys) {
+  const breakdown = buildReferralBreakdown(session, qtys);
+  if (!breakdown.length) {
+    await tgSendMessage(env, chatId, "That comes to ₹0 — switch at least one part on (or add a quantity) and try again.", {
+      reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
+    });
+    return;
+  }
+  session.referral.extras = breakdown;
+  session.referral.originalAmount = breakdown.reduce((s, e) => s + e.amount, 0);
+  delete session.referral._prices;
+  delete session.referral._opts;
+  delete session.referral._salePct;
+  await setSession(env, chatId, session);
   return startReferralExtrasChoice(env, chatId, session);
 }
 
