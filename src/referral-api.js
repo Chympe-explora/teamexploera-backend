@@ -12,7 +12,7 @@
  *        live referral card. Returns nothing but the boolean.
  *
  *   POST /api/referral-validate { site, code, mobile, name }
- *        -> { ok, valid, code, percent|flat, cardPeople, includeFourByFour }
+ *        -> { ok, valid, code, percent|flat, cardPeople, extras }
  *           or { ok, valid:false, reason: "invalid" | "used" }
  *        Called when the visitor taps Apply.
  *
@@ -55,7 +55,7 @@ export async function handleReferralValidate(request, env) {
       percent: v.entry.percent || null,
       flat: v.entry.flat || null,
       cardPeople: v.entry.people || 1,
-      includeFourByFour: v.entry.includeFourByFour === true,
+      extras: Array.isArray(v.entry.extras) ? v.entry.extras : [],
     },
     env
   );

@@ -15,7 +15,7 @@ import { SCHEMA_DEFAULTS } from "./content-schema.js";
 import { SITES, SITE_LABELS, getDoc, saveDoc, deepMerge, getPath, setPath, setPathSeeded, deletePath, getSession, setSession, clearSession } from "./store.js";
 import { listChildren, humanize, chunk } from "./walker.js";
 import { DEFAULT_DISCOUNTS } from "./pricing.js";
-import { tg, tgSendMessage, tgAnswerCallbackQuery, tgSendPhotoByFileId, tgSendDocumentByFileId, tgEditMessageReplyMarkup, kb, btn } from "./telegram.js";
+import { tg, tgSendMessage, tgAnswerCallbackQuery, tgSendPhotoByFileId, tgSendDocumentByFileId, tgEditMessageReplyMarkup, tgEditMessageText, kb, btn } from "./telegram.js";
 import { helpButton, handleHelpCallback, smallRows } from "./help.js";
 import { getLiveStats, resetStats } from "./stats.js";
 import {
@@ -1790,7 +1790,9 @@ async function handleCallback(env, chatId, messageId, data, userId) {
   if (action === "refpkg") return chooseReferralPackage(env, chatId, rest[0], rest[1]);
   if (action === "refsite") return chooseReferralSite(env, chatId, rest.join(":")); // older buttons still in chat
   if (action === "refcancel") return cancelReferralFlow(env, chatId);
-  if (action === "ref4x4") return chooseReferralFourByFour(env, chatId, rest[0] === "yes");
+  if (action === "refextranone") return skipReferralExtras(env, chatId);
+  if (action === "refextratoggle") return toggleReferralExtra(env, chatId, messageId, Number(rest[0]));
+  if (action === "refextradone") return finishReferralExtras(env, chatId, messageId);
 
   return sendMainMenu(env, chatId);
 }
@@ -2274,8 +2276,8 @@ async function handleAwaitedInput(env, chatId, session, msg) {
 
   if (
     awaiting.type === "refPackage" || awaiting.type === "refName" || awaiting.type === "refPeople" ||
-    awaiting.type === "refMobile" || awaiting.type === "refAmount" || awaiting.type === "refFourByFour" ||
-    awaiting.type === "refFourByFourChoice" || awaiting.type === "refDiscount"
+    awaiting.type === "refMobile" || awaiting.type === "refAmount" || awaiting.type === "refExtras" ||
+    awaiting.type === "refExtrasChoice" || awaiting.type === "refDiscount"
   ) {
     return handleReferralAwaitedInput(env, chatId, session, msg, awaiting.type);
   }
@@ -3113,67 +3115,37 @@ async function handleReferralAwaitedInput(env, chatId, session, msg, type) {
       return;
     }
     session.referral.originalAmount = Math.round(amount);
-
-    // Krem Chympe's Private Tour has an optional 4x4 jeep that is NOT
-    // discounted unless the admin asks for it, so ask how much of this
-    // price is the jeep. The Shared Package has no 4x4, and Wilderness
-    // Expedition bundles it into its flat per-person price, so nothing is
-    // carved out for those two — go straight on.
-    if (session.referral.site === "krem-chympe" && session.referral.packageKey !== "sharedTour") {
-      session.awaiting = { type: "refFourByFour" };
-      await setSession(env, chatId, session);
-      await tgSendMessage(
-        env,
-        chatId,
-        `How much of that ₹${session.referral.originalAmount} is the <b>4x4 jeep</b>? (numbers only — send <code>0</code> if this package has no 4x4)\n\nThe 4x4 is left out of the discount unless you choose to include it.`,
-        { reply_markup: kb([[btn("❌ Cancel", "refcancel")]]) }
-      );
-      return;
-    }
-
-    session.referral.fourByFourAmount = 0;
-    session.referral.includeFourByFour = false;
-    await askReferralDiscount(env, chatId, session);
+    session.awaiting = { type: "refExtras" };
+    await setSession(env, chatId, session);
+    await tgSendMessage(
+      env,
+      chatId,
+      `Does that ₹${session.referral.originalAmount} include any separately-priced parts — <b>4x4, guide, food, activities, facilities</b>, or anything else? ` +
+      `Those are left OUT of the discount unless you choose to include them next.\n\n` +
+      `Type each one on its own line as <code>name: amount</code>, e.g.:\n` +
+      `<code>4x4: 4000\nguide: 1500\nfood: 800</code>\n\n` +
+      `Or send <code>none</code> to discount the whole price.`,
+      { reply_markup: kb([[btn("None — discount the whole price", "refextranone")], [btn("❌ Cancel", "refcancel")]]) }
+    );
     return;
   }
 
-  if (type === "refFourByFourChoice") {
-    // Waiting on a button tap — typed text is just a nudge to use them.
-    await tgSendMessage(env, chatId, "Please tap one of the buttons above to choose whether the 4x4 is discounted, or tap Cancel.", {
-      reply_markup: kb([
-        [btn("🚫 No — leave 4x4 out (default)", "ref4x4:no")],
-        [btn("✅ Yes — include 4x4 in the discount", "ref4x4:yes")],
-        [btn("❌ Cancel", "refcancel")],
-      ]),
-    });
-    return;
-  }
-
-  if (type === "refFourByFour") {
-    const raw = text.replace(/[^0-9.]/g, "");
-    const fourByFour = raw === "" ? NaN : Math.round(Number(raw));
-    if (!Number.isFinite(fourByFour) || fourByFour < 0 || fourByFour > session.referral.originalAmount) {
-      await tgSendMessage(env, chatId, `Send just the 4x4 amount in ₹ (between 0 and ${session.referral.originalAmount}), e.g. <code>4000</code> — or <code>0</code> if there's no 4x4.`, {
-        reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
+  if (type === "refExtras") {
+    const extras = parseReferralExtras(text, session.referral.originalAmount);
+    if (extras === null) {
+      await tgSendMessage(env, chatId, `Couldn't read that. One per line as <code>name: amount</code> (numbers only, no more than ₹${session.referral.originalAmount} total), or send <code>none</code>.`, {
+        reply_markup: kb([[btn("None — discount the whole price", "refextranone")], [btn("❌ Cancel", "refcancel")]]),
       });
       return;
     }
-    session.referral.fourByFourAmount = fourByFour;
-    session.referral.includeFourByFour = false;
+    session.referral.extras = extras;
+    return startReferralExtrasChoice(env, chatId, session);
+  }
 
-    if (fourByFour === 0) {
-      await askReferralDiscount(env, chatId, session);
-      return;
-    }
-
-    session.awaiting = { type: "refFourByFourChoice" };
-    await setSession(env, chatId, session);
-    await tgSendMessage(env, chatId, `Should the discount also apply to the 4x4 (₹${fourByFour})?`, {
-      reply_markup: kb([
-        [btn("🚫 No — leave 4x4 out (default)", "ref4x4:no")],
-        [btn("✅ Yes — include 4x4 in the discount", "ref4x4:yes")],
-        [btn("❌ Cancel", "refcancel")],
-      ]),
+  if (type === "refExtrasChoice") {
+    // Waiting on button taps — typed text is just a nudge to use them.
+    await tgSendMessage(env, chatId, "Tap ✅/🚫 above to toggle each one, then tap Continue — or Cancel.", {
+      reply_markup: kb([[btn("❌ Cancel", "refcancel")]]),
     });
     return;
   }
@@ -3215,13 +3187,86 @@ async function askReferralDiscount(env, chatId, session) {
   );
 }
 
-// Button press: include (or not) the 4x4 in this card's discount.
-async function chooseReferralFourByFour(env, chatId, include) {
-  const session = await getSession(env, chatId);
-  if (!session || !session.referral || session.awaiting?.type !== "refFourByFourChoice") {
-    return sendDiscountsMenu(env, chatId); // stale button — the flow was already finished/cancelled
+// Parses lines like "4x4: 4000" / "guide 1500" into
+// [{label, amount, included:false}], case-insensitively, one per line.
+// Returns [] for "none"/"no"/"skip", or null if nothing usable was found.
+function parseReferralExtras(text, cap) {
+  const t = String(text || "").trim();
+  if (/^(none|no|skip|0)$/i.test(t)) return [];
+  const extras = [];
+  for (const lineRaw of t.split(/\n+/)) {
+    const line = lineRaw.trim();
+    if (!line) continue;
+    // "name: 4000" / "name - 4000" (preferred) or, failing that, a bare
+    // trailing number ("name 4000") — either way the amount is whatever
+    // digits sit at the end of the line.
+    const m = line.match(/^(.+?)[:\-]\s*₹?\s*([\d,]+(?:\.\d+)?)\s*$/) || line.match(/^(.+?)\s+₹?([\d,]+(?:\.\d+)?)\s*$/);
+    if (!m) continue;
+    const label = m[1].trim().replace(/\s+/g, " ");
+    const amount = Math.round(Number(m[2].replace(/,/g, "")));
+    if (label && Number.isFinite(amount) && amount > 0) extras.push({ label, amount, included: false });
   }
-  session.referral.includeFourByFour = include === true;
+  if (!extras.length) return null;
+  const total = extras.reduce((s, e) => s + e.amount, 0);
+  if (total > cap) {
+    const scale = cap / total;
+    for (const e of extras) e.amount = Math.round(e.amount * scale);
+  }
+  return extras;
+}
+
+// The admin tapped "None" instead of typing — same as an empty extras list.
+async function skipReferralExtras(env, chatId) {
+  const session = await getSession(env, chatId);
+  if (!session || !session.referral || session.awaiting?.type !== "refExtras") return;
+  session.referral.extras = [];
+  return startReferralExtrasChoice(env, chatId, session);
+}
+
+function extrasChoiceText(originalAmount) {
+  return `Package price: ₹${originalAmount}\n\nTap each one to switch it between excluded (default) and included in the discount, then tap Continue.`;
+}
+function extrasChoiceMarkup(extras) {
+  const rows = extras.map((e, i) => [
+    btn(`${e.included ? "✅" : "🚫"} ${e.label} (₹${e.amount})${e.included ? " — included" : ""}`, `refextratoggle:${i}`),
+  ]);
+  rows.push([btn("▶️ Continue", "refextradone")]);
+  rows.push([btn("❌ Cancel", "refcancel")]);
+  return kb(rows);
+}
+
+// No extras at all — skip straight to the discount question.
+async function startReferralExtrasChoice(env, chatId, session) {
+  if (!session.referral.extras || !session.referral.extras.length) {
+    return askReferralDiscount(env, chatId, session);
+  }
+  session.awaiting = { type: "refExtrasChoice" };
+  const sent = await tgSendMessage(env, chatId, extrasChoiceText(session.referral.originalAmount), {
+    reply_markup: extrasChoiceMarkup(session.referral.extras),
+  });
+  session.referral.extrasMessageId = sent && sent.result && sent.result.message_id;
+  await setSession(env, chatId, session);
+}
+
+// Button press: flip one extra between excluded (default) and included.
+async function toggleReferralExtra(env, chatId, messageId, index) {
+  const session = await getSession(env, chatId);
+  if (!session || !session.referral || session.awaiting?.type !== "refExtrasChoice" || !Array.isArray(session.referral.extras)) {
+    return; // stale button — the flow was already finished/cancelled
+  }
+  const extra = session.referral.extras[index];
+  if (!extra) return;
+  extra.included = !extra.included;
+  await setSession(env, chatId, session);
+  await tgEditMessageText(env, chatId, session.referral.extrasMessageId || messageId, extrasChoiceText(session.referral.originalAmount), {
+    reply_markup: extrasChoiceMarkup(session.referral.extras),
+  });
+}
+
+// "Continue" — extras are locked in, move on to the discount question.
+async function finishReferralExtras(env, chatId, messageId) {
+  const session = await getSession(env, chatId);
+  if (!session || !session.referral || session.awaiting?.type !== "refExtrasChoice") return;
   return askReferralDiscount(env, chatId, session);
 }
 
