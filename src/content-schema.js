@@ -272,7 +272,11 @@ export const SCHEMA_DEFAULTS = {
         "openInMapsLabel": "Open in Maps",
         "forecastLabel": "Weather Forecast",
         "mapTilerApiKey": "YOUR_MAPTILER_API_KEY",
-        "mapStyle": "outdoor-v2"
+        "mapStyle": "streets-v2",
+        "endEnabled": false,
+        "endLocationName": "Trek End",
+        "endLatitude": 25.18,
+        "endLongitude": 92.48
       },
       "destinations": {
         "title": "Destinations",
