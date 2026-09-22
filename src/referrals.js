@@ -11,9 +11,11 @@
  *     when the mobile number (and name) the visitor typed match a live
  *     card — and the code itself only validates against that same
  *     mobile number. A code forwarded to someone else is useless.
- *   • The discount only applies to as many guests as the card was made
- *     for. A card for 1 person on a booking for 3 discounts 1 person's
- *     share; the other 2 pay the normal price (computeReferralDiscount).
+ *   • The discount applies to a FIXED ₹ figure — whichever lines on the
+ *     card the admin marked "included" when it was made (computeReferral
+ *     Discount) — never to a share of whatever the real booking's bill
+ *     comes to. Extra guests, extra food, a jeep, etc. added beyond the
+ *     card never change it.
  *   • It works exactly once. The moment a booking using it is submitted
  *     it is claimed atomically (Durable Object — see status-store.js
  *     claimOnce) and is expired for everyone from then on. A booking
@@ -93,25 +95,35 @@ function slugifyName(name) {
 // this exact formula lives in each site's app.js) and re-checked by
 // the backend on submit.
 //
-//   discountable  = subtotal − excluded   (excluded = the 4x4 jeep, unless
-//                                          the admin included it on the card)
-//   coveredPeople = min(people on the card, people on the booking)
-//   base          = discountable × coveredPeople ÷ people on the booking
-//   percent card  → round(base × percent ÷ 100)
-//   flat card     → min(flat ₹, round(base))
+//   included  = sum of the card's extras[] lines the admin marked
+//               included:true — a fixed ₹ figure fully decided when the
+//               card was made (each line is already priced for however
+//               many people/items the admin put on the card)
+//   percent card  → round(included × percent ÷ 100)
+//   flat card     → min(flat ₹, round(included))
+//   discount      → capped at the guest's real subtotal, so it can never
+//                    exceed what they're actually being charged
 //
-// so a 1-person card on a 3-person booking only ever discounts one
-// person's share of the bill; the other two are charged normally.
+// The guest's actual subtotal never appears in the base itself — adding
+// a jeep, extra thalis, or extra guests beyond what's on the card never
+// changes the discount; it only ever applies to the included lines.
+// coveredPeople is still reported (how many guests this card was made
+// for vs. the real booking) but no longer scales the discount, since
+// each included line is already priced at the card's own people count.
 // ---------------------------------------------------------------------
-export function computeReferralDiscount({ percent, flat, cardPeople, subtotal, persons, excluded }) {
+export function computeReferralDiscount({ percent, flat, cardPeople, subtotal, persons, included }) {
   const total = Number(persons) || 0;
   const sub = Number(subtotal) || 0;
   if (total < 1 || sub <= 0) return { discount: 0, coveredPeople: 0 };
   const coveredPeople = Math.min(Math.max(1, Number(cardPeople) || 1), total);
-  // The 4x4 jeep is a per-group charge, so it comes off BEFORE the per-guest
-  // share is worked out (never more than the subtotal itself).
-  const skip = Math.min(Math.max(0, Number(excluded) || 0), sub);
-  const base = ((sub - skip) * coveredPeople) / total;
+  // The discount applies to a FIXED ₹ figure — the sum of whichever lines
+  // on THIS card the admin marked "included" — never to a share of
+  // whatever the guest's real bill happens to add up to. Items the
+  // guest adds beyond the card (extra thalis, jeep, more guests, ...)
+  // never shrink or grow this base, and items excluded on the card never
+  // eat into it either — the two are independent, not netted against
+  // the real subtotal the way an "excluded" figure used to be.
+  const base = Math.max(0, Number(included) || 0);
   let discount = 0;
   if (percent) discount = Math.round((base * percent) / 100);
   else if (flat) discount = Math.min(Number(flat), Math.round(base));
@@ -392,15 +404,14 @@ export async function verifyAndClaimForBooking(env, { siteId, bookingId, data })
     return { ok: false, status: 400, referralError: "invalid", error: "Referral details are missing from this booking." };
   }
 
-  // How much of the subtotal is left out of the discount — worked out
-  // ENTIRELY from the card the admin made (entry.extras), never from
-  // anything the visitor's browser sends. Amounts on the card are for the
-  // guest count/price the admin typed, so this can be a slight approximation
-  // if the visitor's actual booking differs, but it's never guest-controlled.
-  const excluded = Math.min(
-    (entry.extras || []).filter((e) => !e.included).reduce((sum, e) => sum + e.amount, 0),
-    subtotal
-  );
+  // The ₹ figure the discount actually applies to — worked out ENTIRELY
+  // from the card the admin made (entry.extras), never from anything the
+  // visitor's browser sends. Fixed at whatever the admin marked
+  // "included" when the card was created; nothing about the guest's
+  // real booking (extra items, extra guests) changes it.
+  const included = (entry.extras || []).filter((e) => e.included).reduce((sum, e) => sum + e.amount, 0);
+  // Kept only for the admin-facing summary line ("₹X of extras not discounted").
+  const excluded = (entry.extras || []).filter((e) => !e.included).reduce((sum, e) => sum + e.amount, 0);
 
   const { discount, coveredPeople } = computeReferralDiscount({
     percent: entry.percent,
@@ -408,7 +419,7 @@ export async function verifyAndClaimForBooking(env, { siteId, bookingId, data })
     cardPeople: entry.people,
     subtotal,
     persons,
-    excluded,
+    included,
   });
   // The browser shows the visitor their discounted total, so its
   // number must never be bigger than what this card is worth.
