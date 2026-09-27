@@ -1,12 +1,18 @@
 /**
  * stats.js — a single pinned, permanently-updating message in the
- * TELEGRAM ADMIN CHAT showing a live visitor count and confirmed-booking
- * count. Edited in place (never a new message) so it genuinely "stays on
- * screen" — pinning keeps it at the top of the chat no matter how far the
- * rest of the conversation scrolls.
+ * TELEGRAM ADMIN CHAT showing live visitor counts and a confirmed-
+ * booking count. Edited in place (never a new message) so it genuinely
+ * "stays on screen" — pinning keeps it at the top of the chat no matter
+ * how far the rest of the conversation scrolls.
  *
- * - Visitors: bumped once per browser tab session, the same silent ping
- *   booking-bridge.js already sends on every page load (handleVisit).
+ * - New visitors: bumped once per DISTINCT visitor, the first time
+ *   they're ever seen (see visitors.js#recordVisit, status "new").
+ * - Returning visits: bumped every time an already-known visitor comes
+ *   back after being gone a while (status "returning"). A visitor's
+ *   own visitCount (in visitors.js) is the count for THAT one person;
+ *   this is the running total across everyone.
+ * - Refreshes/clicks/redirects within the same open visit never reach
+ *   here at all (status "duplicate" — see handleVisit in booking.js).
  * - Bookings: bumped only when the admin/guide taps ✅ Confirm under a
  *   booking message — i.e. it's a count of bookings the telegram bot
  *   admin has actually confirmed, not just submitted.
@@ -28,24 +34,26 @@ async function setNum(env, key, value) {
 
 export async function getLiveStats(env) {
   const visitors = await getNum(env, "stats:visitors");
+  const returningVisits = await getNum(env, "stats:returningVisits");
   const bookings = await getNum(env, "stats:bookings");
-  return { visitors, bookings };
+  return { visitors, returningVisits, bookings };
 }
 
-function renderStatsText(visitors, bookings) {
+function renderStatsText(visitors, returningVisits, bookings) {
   const stamp = new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC";
   return (
     `📊 <b>Live Stats</b>\n` +
-    `👀 Visitors: <b>${visitors}</b>\n` +
+    `🆕 New visitors: <b>${visitors}</b>\n` +
+    `🔁 Returning visits: <b>${returningVisits}</b>\n` +
     `✅ Confirmed bookings: <b>${bookings}</b>\n\n` +
     `<i>Updates automatically — pinned so it's always visible. Last change: ${stamp}</i>`
   );
 }
 
-async function pushStatsMessage(env, visitors, bookings) {
+async function pushStatsMessage(env, visitors, returningVisits, bookings) {
   const chatId = env.TELEGRAM_ADMIN_CHAT_ID;
   if (!chatId) return; // no admin chat configured yet — skip silently
-  const text = renderStatsText(visitors, bookings);
+  const text = renderStatsText(visitors, returningVisits, bookings);
   const existingMsgId = await env.BOOKINGS.get("statsmsg");
 
   if (existingMsgId) {
@@ -60,24 +68,40 @@ async function pushStatsMessage(env, visitors, bookings) {
   }
 }
 
-export async function bumpVisitors(env) {
+// Bumped once per brand-new visitor (never for a repeat visit — see
+// visitors.js#recordVisit, status "new").
+export async function bumpNewVisitor(env) {
   const visitors = (await getNum(env, "stats:visitors")) + 1;
   await setNum(env, "stats:visitors", visitors);
+  const returningVisits = await getNum(env, "stats:returningVisits");
   const bookings = await getNum(env, "stats:bookings");
-  await pushStatsMessage(env, visitors, bookings);
+  await pushStatsMessage(env, visitors, returningVisits, bookings);
   return visitors;
+}
+
+// Bumped every time an already-known visitor visits again (status
+// "returning") — never for their first-ever visit.
+export async function bumpReturningVisit(env) {
+  const returningVisits = (await getNum(env, "stats:returningVisits")) + 1;
+  await setNum(env, "stats:returningVisits", returningVisits);
+  const visitors = await getNum(env, "stats:visitors");
+  const bookings = await getNum(env, "stats:bookings");
+  await pushStatsMessage(env, visitors, returningVisits, bookings);
+  return returningVisits;
 }
 
 export async function bumpBookings(env) {
   const bookings = (await getNum(env, "stats:bookings")) + 1;
   await setNum(env, "stats:bookings", bookings);
   const visitors = await getNum(env, "stats:visitors");
-  await pushStatsMessage(env, visitors, bookings);
+  const returningVisits = await getNum(env, "stats:returningVisits");
+  await pushStatsMessage(env, visitors, returningVisits, bookings);
   return bookings;
 }
 
 export async function resetStats(env) {
   await setNum(env, "stats:visitors", 0);
+  await setNum(env, "stats:returningVisits", 0);
   await setNum(env, "stats:bookings", 0);
-  await pushStatsMessage(env, 0, 0);
+  await pushStatsMessage(env, 0, 0, 0);
 }

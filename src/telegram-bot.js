@@ -18,6 +18,7 @@ import { DEFAULT_DISCOUNTS } from "./pricing.js";
 import { tg, tgSendMessage, tgAnswerCallbackQuery, tgSendPhotoByFileId, tgSendDocumentByFileId, tgEditMessageReplyMarkup, tgEditMessageText, kb, btn } from "./telegram.js";
 import { helpButton, handleHelpCallback, smallRows } from "./help.js";
 import { getLiveStats, resetStats } from "./stats.js";
+import { listVisitors, setVisitorName } from "./visitors.js";
 import {
   GATEWAYS,
   getPaymentConfig,
@@ -368,6 +369,7 @@ async function sendMainMenu(env, chatId, note) {
     btn("🤖 ERA AI", "eraai"),
     btn("👁️ Preview", "preview"),
     btn("📊 Stats", "stats"),
+    btn("👀 Visitors", "visitorslist"),
   ];
   const rows = smallRows(items, 2);
   rows.push([btn("🧨 Reset EVERYTHING to default", "resetworld")]);
@@ -1226,12 +1228,47 @@ async function handleGuideCallback(env, chatId, guide, data) {
 }
 
 async function sendStatsMenu(env, chatId) {
-  const { visitors, bookings } = await getLiveStats(env);
+  const { visitors, returningVisits, bookings } = await getLiveStats(env);
   const text =
-    `📊 <b>Live Stats</b>\n👀 Visitors: <b>${visitors}</b>\n✅ Confirmed bookings: <b>${bookings}</b>\n\n` +
-    `This is also kept as a pinned message at the top of this chat, updating automatically as visits and confirmations come in.`;
+    `📊 <b>Live Stats</b>\n🆕 New visitors: <b>${visitors}</b>\n🔁 Returning visits: <b>${returningVisits}</b>\n✅ Confirmed bookings: <b>${bookings}</b>\n\n` +
+    `This is also kept as a pinned message at the top of this chat, updating automatically as visits and confirmations come in. Tap 👀 Visitors from the Main Menu to see and name individual visitors.`;
   await tgSendMessage(env, chatId, text, {
-    reply_markup: kb([[btn("🔄 Reset counters to 0", "resetstats"), helpButton("stats")], [btn("⬅️ Main Menu", "home")]]),
+    reply_markup: kb([[btn("👀 Visitors", "visitorslist"), helpButton("stats")], [btn("🔄 Reset counters to 0", "resetstats")], [btn("⬅️ Main Menu", "home")]]),
+  });
+}
+
+// ---------------- VISITORS (new/returning identification + naming) ----
+// See visitors.js for how "new" vs "returning" is decided server-side
+// (IP+UA hash, survives cleared cookies) and how the visit-count/name
+// per visitor is stored.
+async function sendVisitorsMenu(env, chatId, note) {
+  const items = await listVisitors(env, { limit: 200 });
+  if (!items.length) {
+    await tgSendMessage(env, chatId, (note ? note + "\n\n" : "") + "👀 <b>Visitors</b>\n\nNo visits recorded yet.", {
+      reply_markup: kb([[btn("⬅️ Main Menu", "home")]]),
+    });
+    return;
+  }
+  const shown = items.slice(0, 25);
+  const lines = shown.map((v) => {
+    const when = v.lastSeen ? new Date(v.lastSeen).toISOString().slice(0, 16).replace("T", " ") + " UTC" : "—";
+    const name = v.name ? `<b>${escapeHtml(v.name)}</b>` : "<i>unnamed</i>";
+    return `${name} — ${v.visitCount} visit${v.visitCount === 1 ? "" : "s"} — last seen ${when}\n<code>${v.hash}</code>`;
+  });
+  const text =
+    (note ? note + "\n\n" : "") +
+    `👀 <b>Visitors</b> (${items.length}${items.length > shown.length ? `, showing most recent ${shown.length}` : ""})\n\n` +
+    `Tap a visitor below to name or rename them — that name then shows on every future notification from them.\n\n` +
+    lines.join("\n\n");
+  const rows = shown.map((v) => [btn(`🏷️ ${v.name || v.hash}`, `namevisitor:${v.hash}`)]);
+  rows.push([btn("⬅️ Main Menu", "home")]);
+  await tgSendMessage(env, chatId, text, { reply_markup: kb(rows) });
+}
+
+async function startNameVisitor(env, chatId, hash) {
+  await setSession(env, chatId, { awaiting: { type: "visitorname", hash } });
+  await tgSendMessage(env, chatId, `🏷️ Send a name/label for this visitor (e.g. "John", "Spam bot", "Office IP").`, {
+    reply_markup: kb([[btn("❌ Cancel", "visitorslist")]]),
   });
 }
 
@@ -1556,6 +1593,10 @@ async function handleCallback(env, chatId, messageId, data, userId) {
     await resetStats(env);
     return sendStatsMenu(env, chatId);
   }
+
+  // ---- 👀 Visitors — see visitors.js ----
+  if (action === "visitorslist") return sendVisitorsMenu(env, chatId);
+  if (action === "namevisitor") return startNameVisitor(env, chatId, rest.join(":"));
 
   // ---- ERA AI: per-visitor conversation controls (attached to every
   // forwarded visitor message — see conversations.js#convButtons) ----
@@ -2282,6 +2323,26 @@ async function handleAwaitedInput(env, chatId, session, msg) {
     awaiting.type === "refExtrasChoice" || awaiting.type === "refDiscount"
   ) {
     return handleReferralAwaitedInput(env, chatId, session, msg, awaiting.type);
+  }
+
+  if (awaiting.type === "visitorname") {
+    const text = (msg.text ?? "").trim();
+    if (!text) {
+      await tgSendMessage(env, chatId, "Please send a name, or tap Cancel.", { reply_markup: kb([[btn("❌ Cancel", "visitorslist")]]) });
+      return;
+    }
+    const updated = await setVisitorName(env, awaiting.hash, text.slice(0, 60));
+    await clearSession(env, chatId);
+    if (!updated) {
+      await tgSendMessage(env, chatId, "⚠️ Couldn't find that visitor — tap 👀 Visitors to see the current list.", {
+        reply_markup: kb([[btn("👀 Visitors", "visitorslist")]]),
+      });
+      return;
+    }
+    await tgSendMessage(env, chatId, `✅ Saved — future notifications from this visitor will show <b>${escapeHtml(text)}</b>.`, {
+      reply_markup: kb([[btn("⬅️ Back to Visitors", "visitorslist")]]),
+    });
+    return;
   }
 
   if (awaiting.type === "eraBulk") {

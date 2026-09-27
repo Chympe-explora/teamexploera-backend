@@ -29,7 +29,8 @@
  *   BOOKINGS  - a KV namespace (see wrangler.toml)
  */
 
-import { bumpVisitors, bumpBookings } from "./stats.js";
+import { bumpNewVisitor, bumpReturningVisit, bumpBookings } from "./stats.js";
+import { recordVisit } from "./visitors.js";
 import { isSessionActive, isSessionBlocked, toggleSessionBlocked } from "./conversations.js";
 import { getEligibleGuides, assignBookingToGuide, getGuide, getGuideByChatId } from "./guides.js";
 // Booking/refund status reads+writes go through status-store.js, NOT
@@ -184,13 +185,38 @@ export function newId() {
 // Never shown to the visitor; just a Telegram heads-up for the admin.
 export async function handleVisit(request, env) {
   const { sessionId, siteId, path, referrer } = await request.json();
+
+  // Identifies this browser+connection server-side (IP+UA hash — see
+  // visitors.js) and decides whether this ping is the SAME open visit
+  // (refresh/click/redirect/background request — no notification at
+  // all), a brand-new visitor, or a known visitor coming back after a
+  // gap. This is what stops one visitor from spamming the admin chat on
+  // every page load, while still pinging again if they leave and come
+  // back later.
+  const result = await recordVisit(request, env);
+  if (result.status === "duplicate") return json({ ok: true }, env);
+
+  const isNew = result.status === "new";
+  const label = isNew ? "\ud83c\udd95 <b>New visitor</b>" : "\ud83d\udd01 <b>Returning visitor</b>";
   const text =
-    `\ud83d\udc40 <b>New visitor — ${escapeHtml(siteId || "site")}</b>\n` +
+    `${label} — ${escapeHtml(siteId || "site")}\n` +
+    (result.name ? `name: ${escapeHtml(result.name)}\n` : "") +
+    (isNew ? "" : `visit #${result.visitCount}\n`) +
     `page: ${escapeHtml(path || "/")}\n` +
     (referrer ? `from: ${escapeHtml(referrer)}\n` : "") +
     `session: ${escapeHtml(sessionId || "")}`;
+
+  // Posted to the same booking chat as before — nothing about where
+  // this message lands changes. Naming/checking visitors happens
+  // separately, from the 👀 Visitors menu in the admin bot (Main Menu
+  // or 📊 Stats), which doesn't depend on this message at all — so no
+  // inline button is attached here (this chat only processes
+  // Confirm/Reject-style taps, a button here would just silently do
+  // nothing).
   await tg(env, "sendMessage", { chat_id: env.TELEGRAM_CHAT_ID, parse_mode: "HTML", text });
-  await bumpVisitors(env).catch(() => {});
+
+  if (isNew) await bumpNewVisitor(env).catch(() => {});
+  else await bumpReturningVisit(env).catch(() => {});
   return json({ ok: true }, env);
 }
 
