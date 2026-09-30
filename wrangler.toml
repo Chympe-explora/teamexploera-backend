@@ -10,6 +10,14 @@ kv_namespaces = [
   { binding = "BOOKINGS", id = "cd92b965c0ed4581bebe2cb0b941d9cb" }
 ]
 
+# R2 bucket for optional visitor-rating photos (max 3 per review, WebP,
+# see src/ratings-photos.js). Create it ONCE before deploying, or the
+# deploy will fail:
+#   npx wrangler r2 bucket create team-explo-era-rating-photos
+[[r2_buckets]]
+binding = "RATING_PHOTOS"
+bucket_name = "team-explo-era-rating-photos"
+
 # BOOKING_STATUS — a Durable Object, NOT KV. This is what makes booking
 # status polling reliable: KV is eventually consistent (a write can take
 # up to 60s to reach every edge location, and an edge location can keep
