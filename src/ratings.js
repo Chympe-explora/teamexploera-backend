@@ -23,6 +23,7 @@
 import { isValidSite, getDoc, saveDoc } from "./store.js";
 import { json, withEdgeCache } from "./booking.js";
 import { tgSendMessage } from "./telegram.js";
+import { readRatingRequest, savePhotos, deletePhotos } from "./ratings-photos.js";
 
 // Keeps the stored doc (and the Telegram message that holds it) from
 // growing without bound on a long-running site — oldest ratings quietly
@@ -66,9 +67,12 @@ export async function handleGetRatings(request, url, env, ctx) {
 }
 
 // POST /api/ratings  { site, name, rating, comment, sessionId }
+// Also accepts multipart/form-data with the same fields plus up to 3 `photos`
+// (see ratings-photos.js). Without photos it behaves exactly as before.
 export async function handleSubmitRating(request, env) {
-  const body = await request.json().catch(() => ({}));
-  const { site, name, rating, comment, sessionId } = body || {};
+  const parsed = await readRatingRequest(request);
+  if (!parsed.ok) return json(parsed.body, env, parsed.status);
+  const { site, name, rating, comment, sessionId } = parsed.fields || {};
   if (!isValidSite(site)) return json({ ok: false, error: "bad site" }, env, 400);
 
   const stars = Math.max(1, Math.min(5, Math.round(Number(rating) || 0)));
@@ -79,16 +83,36 @@ export async function handleSubmitRating(request, env) {
     name: String(name || "Anonymous visitor").trim().slice(0, 60) || "Anonymous visitor",
     rating: stars,
     comment: String(comment || "").trim().slice(0, 500),
+    photos: [],
     pinned: false,
     ts: Date.now(),
   };
 
+  // Photos are stored only after the rating itself has passed validation.
+  if (parsed.files.length) {
+    try {
+      entry.photos = await savePhotos(env, entry.id, parsed.files);
+    } catch (e) {
+      return json({ ok: false, error: "photo_invalid", photoError: true, message: "Photo upload isn't available right now. Please submit your rating without photos." }, env, 503);
+    }
+  }
+
   const docKey = `ratings:${site}`;
   const list = await getDoc(env, docKey, []);
-  const next = [entry, ...(Array.isArray(list) ? list : [])].slice(0, MAX_RATINGS);
-  await saveDoc(env, docKey, next, {
-    logChange: `New ${stars}\u2605 rating from ${entry.name}${entry.comment ? " (with a comment)" : ""}`,
-  });
+  const combined = [entry, ...(Array.isArray(list) ? list : [])];
+  const next = combined.slice(0, MAX_RATINGS);
+  try {
+    await saveDoc(env, docKey, next, {
+      logChange: `New ${stars}\u2605 rating from ${entry.name}${entry.comment ? " (with a comment)" : ""}${entry.photos.length ? ` + ${entry.photos.length} photo(s)` : ""}`,
+    });
+  } catch (e) {
+    await deletePhotos(env, entry.photos).catch(() => {}); // don't leave orphaned photos behind
+    throw e;
+  }
+  // Ratings that just aged out of the stored 300 take their photos with them.
+  for (const old of combined.slice(MAX_RATINGS)) {
+    if (old && Array.isArray(old.photos) && old.photos.length) await deletePhotos(env, old.photos).catch(() => {});
+  }
 
   const chatId = env.TELEGRAM_ADMIN_CHAT_ID || env.TELEGRAM_CHAT_ID;
   if (chatId) {
@@ -97,6 +121,7 @@ export async function handleSubmitRating(request, env) {
       `\ud83c\udf1f <b>New website rating</b> \u2014 <i>${escapeHtml(site)}</i>\n` +
       `${starsDisplay}\n` +
       `<b>${escapeHtml(entry.name)}</b>` +
+      (entry.photos.length ? `\n\ud83d\udcf7 ${entry.photos.length} photo${entry.photos.length === 1 ? "" : "s"} attached` : "") +
       (entry.comment ? `\n\u201c${escapeHtml(entry.comment)}\u201d` : "") +
       (sessionId ? `\n\n<i>session: ${escapeHtml(String(sessionId).slice(0, 64))}</i>` : "");
     await tgSendMessage(env, chatId, text, {

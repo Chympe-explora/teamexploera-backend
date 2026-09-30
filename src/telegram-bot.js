@@ -18,6 +18,7 @@ import { DEFAULT_DISCOUNTS } from "./pricing.js";
 import { tg, tgSendMessage, tgAnswerCallbackQuery, tgSendPhotoByFileId, tgSendDocumentByFileId, tgEditMessageReplyMarkup, tgEditMessageText, kb, btn } from "./telegram.js";
 import { helpButton, handleHelpCallback, smallRows } from "./help.js";
 import { getLiveStats, resetStats } from "./stats.js";
+import { deletePhotos } from "./ratings-photos.js";
 import { listVisitors, setVisitorName } from "./visitors.js";
 import {
   GATEWAYS,
@@ -3029,6 +3030,12 @@ async function deleteChild(env, chatId, keyAndSelf) {
   const idx = Number(session.path[session.path.length - 1]);
 
   if (Array.isArray(parent) && !Number.isNaN(idx)) {
+    // Deleting a visitor rating that has photos also removes them from R2
+    // (deletePhotos only touches keys of the form reviews/<id>/<n>.webp).
+    const removedItem = parent[idx];
+    if (removedItem && Array.isArray(removedItem.photos) && removedItem.photos.length) {
+      await deletePhotos(env, removedItem.photos).catch(() => {});
+    }
     parent.splice(idx, 1);
     session.path.pop();
     await saveDoc(env, docKey, merged, { logChange: `Deleted item #${idx + 1} from ${parentPath}` });

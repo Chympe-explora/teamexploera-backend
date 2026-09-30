@@ -339,12 +339,17 @@ function escapeHtml(s) {
 
 const MAX_JSON_BYTES = 64 * 1024; // 64KB — every JSON endpoint here is a small form
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024; // 15MB — receipt photos/docs (Telegram's own cap is ~20MB for bots)
+const MAX_RATING_UPLOAD_BYTES = 7 * 1024 * 1024; // up to 3 review photos (2MB each) + text fields
 
 function bodyTooLarge(request, url) {
   const len = parseInt(request.headers.get("content-length") || "0", 10);
   if (!len) return false; // no declared length — let it through, formData()/json() will still bound memory use
   const isUpload = url.pathname === "/api/receipt";
-  return len > (isUpload ? MAX_UPLOAD_BYTES : MAX_JSON_BYTES);
+  // A rating with photos is multipart; a plain rating (JSON) keeps the 64KB cap.
+  const isRatingWithPhotos =
+    url.pathname === "/api/ratings" && request.method === "POST" &&
+    (request.headers.get("content-type") || "").includes("multipart/form-data");
+  return len > (isUpload ? MAX_UPLOAD_BYTES : isRatingWithPhotos ? MAX_RATING_UPLOAD_BYTES : MAX_JSON_BYTES);
 }
 
 // ---------------------------------------------------------------------
@@ -391,6 +396,12 @@ export async function securityGate(request, env, ctx) {
   const url = new URL(request.url);
 
   if (EXEMPT_PATHS.has(url.pathname)) return null;
+
+  // Public review photos are plain read-only image fetches (key format is
+  // validated in ratings-photos.js). They must not count toward the per-IP
+  // rate limit, or a page with a few thumbnails would burn KV writes and
+  // could get a real visitor rate-limited.
+  if (request.method === "GET" && url.pathname.startsWith("/api/rating-photo/")) return null;
 
   const ip = normalizeIp(getClientIp(request));
 

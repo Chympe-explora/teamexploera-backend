@@ -79,7 +79,7 @@
  *                               wrangler secret put ADMIN_API_SECRET
  */
 
-import { json, corsHeaders, handleVisit, handleTap, handleDraft, handlePayNow, handleReceipt, handleSubmit, handleBookingCallback, handleStatusCheck, handleRefundRequest, handleRefundStatus } from "./booking.js";
+import { json, corsHeaders, withEdgeCache, handleVisit, handleTap, handleDraft, handlePayNow, handleReceipt, handleSubmit, handleBookingCallback, handleStatusCheck, handleRefundRequest, handleRefundStatus } from "./booking.js";
 import { handleGetContent, handleGetPrices, handleGetImages, handleGetHighlights, handleGetDiscounts, handleGetBootstrap, handleCalculatePrice, handleMedia, handleVideoMedia, handleAdminResetImages } from "./content-api.js";
 import { handleTelegramAdminUpdate, isAdmin } from "./telegram-bot.js";
 import { getGuideByChatId } from "./guides.js";
@@ -87,6 +87,7 @@ import { isLocked } from "./auth.js";
 import { tg } from "./telegram.js";
 import { handleEraMessage, handleEraPoll, handleEraTyping } from "./era-ai.js";
 import { handleGetRatings, handleSubmitRating } from "./ratings.js";
+import { servePhoto } from "./ratings-photos.js";
 import { createOrder, getOrder, handlePaymentWebhook } from "./payments.js";
 import { tgSendMessage } from "./telegram.js";
 import { securityGate, withSecurityHeaders, secureCompare, isBlocked, adminUnblock, getClientIp } from "./security.js";
@@ -221,6 +222,13 @@ async function route(request, env, ctx, url) {
       if (url.pathname === "/api/era/message" && request.method === "POST") return handleEraMessage(request, env, ctx);
       if (url.pathname === "/api/era/poll" && request.method === "GET") return handleEraPoll(url, env);
       if (url.pathname === "/api/era/typing" && request.method === "POST") return handleEraTyping(request, env, ctx);
+
+      // ---- review photos (R2) — GET /api/rating-photo/reviews/<id>/<n>.webp ----
+      if (url.pathname.startsWith("/api/rating-photo/") && request.method === "GET") {
+        let key = "";
+        try { key = decodeURIComponent(url.pathname.slice("/api/rating-photo/".length)); } catch (e) { key = ""; }
+        return withEdgeCache(request, ctx, 3600, () => servePhoto(request, env, key));
+      }
 
       // ---- visitor ratings (new) ----
       if (url.pathname === "/api/ratings" && request.method === "GET") return handleGetRatings(request, url, env, ctx);
