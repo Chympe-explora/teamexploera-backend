@@ -51,6 +51,10 @@ new_sqlite_classes = ["BookingStatusDO"]
 # empty — they must live here, not only in the dashboard.
 [vars]
 ALLOWED_ORIGIN = "*"
+# Website B (Krem Chympe static site) origin allowed to call /api/siteb/* — ORIGIN ONLY, no path.
+SITE_B_ORIGIN = "https://chympe-explora.github.io"
+# The booking GROUP chat id (negative). Falls back to TELEGRAM_CHAT_ID if left empty.
+TELEGRAM_BOOKING_GROUP_ID = ""
 # Comma-separated Telegram numeric user ids allowed to drive the admin
 # bot.
 ADMIN_USER_IDS = "8550710288"
