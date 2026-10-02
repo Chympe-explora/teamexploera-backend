@@ -66,7 +66,7 @@ export async function readRatingRequest(request) {
 export async function savePhotos(env, reviewId, files) {
   const keys = [];
   if (!files || !files.length) return keys;
-  if (!env.RATING_PHOTOS) throw new Error("RATING_PHOTOS bucket not configured");
+  if (!env.RATING_PHOTOS) return keys;
   for (let i = 0; i < files.length; i++) {
     const key = "reviews/" + reviewId + "/" + (i + 1) + ".webp";
     await env.RATING_PHOTOS.put(key, files[i].bytes, { httpMetadata: { contentType: files[i].type } });
