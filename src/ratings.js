@@ -21,6 +21,8 @@
  */
 
 import { isValidSite, getDoc, saveDoc } from "./store.js";
+const RATING_SITES = ["root", "krem-chympe", "wilderness-expedition", "website-b"];
+const okSite = (s) => isValidSite(s) || RATING_SITES.includes(s);
 import { json, withEdgeCache } from "./booking.js";
 import { tgSendMessage } from "./telegram.js";
 import { readRatingRequest, savePhotos, deletePhotos } from "./ratings-photos.js";
@@ -38,7 +40,7 @@ function escapeHtml(s) {
 // GET /api/ratings?site=root|krem-chympe|wilderness-expedition
 export async function handleGetRatings(request, url, env, ctx) {
   const site = url.searchParams.get("site");
-  if (!isValidSite(site)) return json({ ok: false, error: "bad site" }, env, 400);
+  if (!okSite(site)) return json({ ok: false, error: "bad site" }, env, 400);
 
   return withEdgeCache(request, ctx, 30, async () => {
     const list = await getDoc(env, `ratings:${site}`, []);
@@ -73,7 +75,7 @@ export async function handleSubmitRating(request, env) {
   const parsed = await readRatingRequest(request);
   if (!parsed.ok) return json(parsed.body, env, parsed.status);
   const { site, name, rating, comment, sessionId } = parsed.fields || {};
-  if (!isValidSite(site)) return json({ ok: false, error: "bad site" }, env, 400);
+  if (!okSite(site)) return json({ ok: false, error: "bad site" }, env, 400);
 
   const stars = Math.max(1, Math.min(5, Math.round(Number(rating) || 0)));
   if (!stars) return json({ ok: false, error: "a 1-5 star rating is required" }, env, 400);

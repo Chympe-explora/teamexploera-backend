@@ -110,7 +110,7 @@ const CATEGORIES = [
   { kind: "prices", label: "💰 Edit Prices", perSite: true, sites: ["krem-chympe", "wilderness-expedition"] },
   { kind: "discounts", label: "🏷️ Discounts & Sales", perSite: false },
   { kind: "highlights", label: "🌟 Highlights / Banner", perSite: true },
-  { kind: "ratings", label: "⭐ Visitor Ratings", perSite: true },
+  { kind: "ratings", label: "⭐ Visitor Ratings", perSite: true, sites: ["root", "krem-chympe", "wilderness-expedition", "website-b"] },
 ];
 
 export function isAdmin(env, userId) {

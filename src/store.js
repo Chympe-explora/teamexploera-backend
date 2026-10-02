@@ -33,6 +33,7 @@ export const SITE_LABELS = {
   root: "🏠 Home site",
   "krem-chympe": "🌊 Krem Chympe",
   "wilderness-expedition": "🥾 Wilderness Expedition",
+  "website-b": "🏕 Website B",
 };
 
 export function isValidSite(site) {
