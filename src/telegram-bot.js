@@ -48,6 +48,7 @@ import {
 } from "./guides.js";
 import { getAuth, isLocked, lockAccount, tryUnlock, setCustomPassword, setAdminPhone, requestGuideReset, allowGuideReset, generateGuideResetCode, redeemGuideResetCode } from "./auth.js";
 import { isManualModeEnabled, setManualModeEnabled } from "./manual-mode.js";
+import { getSiteBSettings, setSiteBMode, setSiteBWhatsapp } from "./site-b.js";
 import { sendBookingToOne } from "./booking.js";
 import { isRateLimitExempt, setRateLimitExempt, clearRateLimitExempt, listRateLimitExemptions, isBlocked, adminUnblock, normalizeIp } from "./security.js";
 // Same strongly-consistent status source the visitor-facing polling
@@ -378,6 +379,10 @@ async function sendMainMenu(env, chatId, note) {
   // ---- 📵 Manual WhatsApp Mode — see manual-mode.js ----
   const manualMode = await isManualModeEnabled(env);
   rows.push([btn(manualMode ? "📵 Manual WhatsApp Mode: 🟢 ON — tap to turn OFF" : "📵 Manual WhatsApp Mode: OFF — tap to turn ON", "togglemanualmode")]);
+
+  // ---- 🏕 Website B submit mode — see site-b.js ----
+  const sb = await getSiteBSettings(env);
+  rows.push([btn(`🏕 Website B Submit: ${sb.mode === "whatsapp" ? "📲 WhatsApp" : "👥 Group"}`, "sitebmenu")]);
 
   // ---- 🔑 login & security — see auth.js ----
   const chatUserId = chatId; // admin normally messages the bot from their own personal chat, where chatId === their Telegram user id
@@ -1554,6 +1559,28 @@ async function handleCallback(env, chatId, messageId, data, userId) {
 
   if (action === "preview") return sendPreviewLinks(env, chatId);
 
+  if (action === "sitebmenu" || action === "sitebmode" || action === "sitebwa") {
+    if (action === "sitebmode") await setSiteBMode(env, rest[0] === "whatsapp" ? "whatsapp" : "group");
+    if (action === "sitebwa") {
+      await setSession(env, chatId, { awaiting: { type: "sitebwa" } });
+      await tgSendMessage(env, chatId, "📲 Send the WhatsApp number for Website B's Submit button, with country code (e.g. <code>919876543210</code>).", { reply_markup: kb([[btn("❌ Cancel", "sitebmenu")]]) });
+      return;
+    }
+    const sb = await getSiteBSettings(env);
+    await tgSendMessage(
+      env, chatId,
+      `🏕 <b>Website B — Submit button</b>\n\nMode: <b>${sb.mode === "whatsapp" ? "📲 WhatsApp" : "👥 Group"}</b>\nWhatsApp number: ${sb.whatsapp ? "+" + sb.whatsapp : "<i>not set</i>"}\n\n` +
+      `📲 <b>WhatsApp</b>: Submit opens WhatsApp with the full breakdown. The group only gets package, date, people and total price.\n` +
+      `👥 <b>Group</b>: Submit sends the full breakdown + receipt straight to the booking group.`,
+      { reply_markup: kb([
+        [btn(sb.mode === "group" ? "✅ 👥 Group" : "👥 Group", "sitebmode:group"), btn(sb.mode === "whatsapp" ? "✅ 📲 WhatsApp" : "📲 WhatsApp", "sitebmode:whatsapp")],
+        [btn(sb.whatsapp ? "✏️ Change WhatsApp number" : "➕ Add WhatsApp number", "sitebwa")],
+        [btn("⬅️ Main menu", "home")],
+      ]) }
+    );
+    return;
+  }
+
   if (action === "togglemanualmode") {
     const nowOn = !(await isManualModeEnabled(env));
     await setManualModeEnabled(env, nowOn);
@@ -2424,6 +2451,18 @@ async function handleAwaitedInput(env, chatId, session, msg) {
     await setCredentialField(env, awaiting.site, awaiting.key, value);
     await clearSession(env, chatId);
     await sendPaymentMenu(env, chatId, awaiting.site, "✅ Saved.");
+    return;
+  }
+
+  if (awaiting.type === "sitebwa") {
+    const digits = (msg.text ?? "").replace(/\D/g, "");
+    if (digits.length < 10 || digits.length > 15) {
+      await tgSendMessage(env, chatId, "That doesn't look like a full number with country code (10–15 digits). Try again, or tap Cancel.", { reply_markup: kb([[btn("❌ Cancel", "sitebmenu")]]) });
+      return;
+    }
+    await setSiteBWhatsapp(env, digits);
+    await clearSession(env, chatId);
+    await tgSendMessage(env, chatId, `✅ Saved. Website B's WhatsApp number is now +${digits}.`, { reply_markup: kb([[btn("🏕 Website B settings", "sitebmenu")]]) });
     return;
   }
 

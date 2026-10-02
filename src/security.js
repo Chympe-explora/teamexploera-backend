@@ -184,6 +184,9 @@ async function rateLimit(env, bucket, ip, limit, windowSeconds) {
 // Per-route limits. Anything not listed falls back to DEFAULT_LIMIT.
 // [bucket name, limit, windowSeconds]
 const ROUTE_LIMITS = [
+  [/^\/api\/siteb\/booking$/, 8, 300], // Website B submissions
+  [/^\/api\/siteb\/receipt$/, 10, 300],
+  [/^\/api\/siteb\/config$/, 60, 60],
   [/^\/api\/submit$/, 8, 300], // a real booking submission, tightly capped
   [/^\/api\/refund-request$/, 8, 300],
   [/^\/api\/receipt$/, 15, 300], // file uploads
@@ -344,7 +347,7 @@ const MAX_RATING_UPLOAD_BYTES = 7 * 1024 * 1024; // up to 3 review photos (2MB e
 function bodyTooLarge(request, url) {
   const len = parseInt(request.headers.get("content-length") || "0", 10);
   if (!len) return false; // no declared length — let it through, formData()/json() will still bound memory use
-  const isUpload = url.pathname === "/api/receipt";
+  const isUpload = url.pathname === "/api/receipt" || url.pathname === "/api/siteb/receipt";
   // A rating with photos is multipart; a plain rating (JSON) keeps the 64KB cap.
   const isRatingWithPhotos =
     url.pathname === "/api/ratings" && request.method === "POST" &&

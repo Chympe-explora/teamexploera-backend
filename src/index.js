@@ -82,6 +82,7 @@
 import { json, corsHeaders, withEdgeCache, handleVisit, handleTap, handleDraft, handlePayNow, handleReceipt, handleSubmit, handleBookingCallback, handleStatusCheck, handleRefundRequest, handleRefundStatus } from "./booking.js";
 import { handleGetContent, handleGetPrices, handleGetImages, handleGetHighlights, handleGetDiscounts, handleGetBootstrap, handleCalculatePrice, handleMedia, handleVideoMedia, handleAdminResetImages } from "./content-api.js";
 import { handleTelegramAdminUpdate, isAdmin } from "./telegram-bot.js";
+import { handleSiteBConfig, handleSiteBBooking, handleSiteBReceipt, siteBPreflight } from "./site-b.js";
 import { getGuideByChatId } from "./guides.js";
 import { isLocked } from "./auth.js";
 import { tg } from "./telegram.js";
@@ -104,6 +105,7 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
+      if (url.pathname.startsWith("/api/siteb/")) return siteBPreflight(request, env);
       return new Response(null, { headers: corsHeaders(env) });
     }
 
@@ -129,6 +131,11 @@ async function route(request, env, ctx, url) {
       if (url.pathname === "/api/whoami") {
         return json({ ok: true, ip: getClientIp(request), adminIpsRaw: env.ADMIN_IPS || "" }, env);
       }
+
+      // ---- Website B (static Krem Chympe site) — see site-b.js ----
+      if (url.pathname === "/api/siteb/config" && request.method === "GET") return handleSiteBConfig(request, env);
+      if (url.pathname === "/api/siteb/booking" && request.method === "POST") return handleSiteBBooking(request, env);
+      if (url.pathname === "/api/siteb/receipt" && request.method === "POST") return handleSiteBReceipt(request, env);
 
       // ---- booking (unchanged) ----
       if (url.pathname === "/api/visit" && request.method === "POST") return handleVisit(request, env);
