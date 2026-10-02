@@ -49,6 +49,7 @@ import {
 import { getAuth, isLocked, lockAccount, tryUnlock, setCustomPassword, setAdminPhone, requestGuideReset, allowGuideReset, generateGuideResetCode, redeemGuideResetCode } from "./auth.js";
 import { isManualModeEnabled, setManualModeEnabled } from "./manual-mode.js";
 import { getSiteBSettings, setSiteBMode, setSiteBWhatsapp } from "./site-b.js";
+import { getTeam, createMember, regenerateCode, redeemCode, getMemberByChat, setMemberActive, removeMember, bookingIds, getBooking } from "./siteb-team.js";
 import { sendBookingToOne } from "./booking.js";
 import { isRateLimitExempt, setRateLimitExempt, clearRateLimitExempt, listRateLimitExemptions, isBlocked, adminUnblock, normalizeIp } from "./security.js";
 // Same strongly-consistent status source the visitor-facing polling
@@ -176,6 +177,104 @@ async function promptGuidePhone(env, chatId) {
   );
 }
 
+// ---------------------------------------------------------------------
+// 🏕 WEBSITE B TEAM — people who receive Website B bookings (see siteb-team.js).
+// A person who is neither admin nor guide can paste a 6-character code to link themselves; after that
+// they get every new Website B booking here. They can send /stop to pause and /resume to continue.
+// ---------------------------------------------------------------------
+async function handleSiteBTeamUser(env, chatId, msg) {
+  const raw = (msg.text || "").trim().toUpperCase();
+  const text = raw.replace(/^\/JOIN\s+/, "");
+  if (/^[A-Z0-9]{6}$/.test(text)) {
+    const m = await redeemCode(env, text, chatId);
+    if (m) {
+      await tgSendMessage(env, chatId, `✅ You're linked, ${escapeHtml(m.name)}!\n\nFrom now on, every new <b>Website B</b> booking will be sent to you right here.\n\nSend /stop to pause bookings and /resume to start again.\n\n🔔 Keep Telegram notifications ON for this chat so you never miss one.`);
+      return true;
+    }
+  }
+  const member = await getMemberByChat(env, chatId);
+  if (!member) return false;
+  if (raw === "/STOP") { await setMemberActive(env, member.id, false); await tgSendMessage(env, chatId, "⏸ Paused. You won't get new Website B bookings. Send /resume to start again."); return true; }
+  if (raw === "/RESUME" || raw === "/START") { await setMemberActive(env, member.id, true); await tgSendMessage(env, chatId, "▶️ You're receiving Website B bookings again."); return true; }
+  await tgSendMessage(env, chatId, `You're receiving Website B bookings (${member.active ? "🟢 active" : "⏸ paused"}).\nSend /stop to pause or /resume to continue.`);
+  return true;
+}
+
+async function sendSiteBTeamMenu(env, chatId, note) {
+  const team = await getTeam(env);
+  const rows = team.map((m) => [btn(`${!m.chatId ? "⏳" : m.active ? "🟢" : "⏸"} ${m.name}`, `sbmember:${m.id}`)]);
+  rows.push([btn("➕ Generate code", "sbadd")]);
+  rows.push([btn("📋 All Website B bookings", "sbbookings")]);
+  rows.push([btn("⬅️ Main menu", "home")]);
+  await tgSendMessage(env, chatId,
+    (note ? note + "\n\n" : "") +
+    `👥 <b>Website B Team</b> (${team.length})\n\nGenerate a code, send it to the person, and when they paste it into this bot they start receiving every new Website B booking.\n\n⏳ = code not used yet · 🟢 receiving · ⏸ paused`,
+    { reply_markup: kb(rows) });
+}
+
+// ---- 📋 Website B bookings (admin view: all bookings, or the ones sent to one team member) ----
+const istTime = (iso) => { try { return new Date(iso).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return iso || ""; } };
+
+async function sendSiteBBookings(env, chatId, memberId) {
+  const team = await getTeam(env);
+  const member = memberId ? team.find((x) => x.id === memberId) : null;
+  const back = member ? `sbmember:${member.id}` : "home";
+  const ids = (await bookingIds(env, memberId || null)).slice(-15).reverse();
+  const title = member ? `📋 <b>Website B bookings sent to ${escapeHtml(member.name)}</b>` : "📋 <b>Website B bookings</b> (latest 15)";
+  if (!ids.length) {
+    await tgSendMessage(env, chatId, `${title}\n\nNo bookings yet.`, { reply_markup: kb([...(member ? [] : [[btn("🔎 Find by booking ID", "sbfind")]]), [btn("⬅️ Back", back)]]) });
+    return;
+  }
+  const rows = [];
+  for (const id of ids) {
+    const b = await getBooking(env, id);
+    const sm = (b && b.summary) || {};
+    rows.push([btn(`${id} · ${sm.pkg || "?"} · ${sm.date || ""} · ${sm.total || ""}`.slice(0, 60), `sbbk:${id}${member ? ":" + member.id : ""}`)]);
+  }
+  if (!member) rows.push([btn("🔎 Find by booking ID", "sbfind")]);
+  rows.push([btn("⬅️ Back", back)]);
+  await tgSendMessage(env, chatId, `${title}\n\nTap a booking for the complete details.`, { reply_markup: kb(rows) });
+}
+
+async function sendSiteBBookingDetail(env, chatId, id, fromMember) {
+  const b = await getBooking(env, id);
+  const back = fromMember ? `sbmbook:${fromMember}` : "sbbookings";
+  if (!b) {
+    await tgSendMessage(env, chatId, `⚠️ No booking found with ID <code>${escapeHtml(id)}</code> (details are kept for 180 days).`, { reply_markup: kb([[btn("⬅️ Back", back)]]) });
+    return;
+  }
+  const sm = b.summary || {};
+  const sent = (b.sentTo || []).map((m) => m.name);
+  const full = escapeHtml(b.message || "").replace(/\*([^*\n]+)\*/g, "<b>$1</b>").slice(0, 3000);
+  const text =
+    `🏕 <b>Website B booking ${escapeHtml(b.id)}</b>\n` +
+    `🕒 ${escapeHtml(istTime(b.at))}\n` +
+    `Mode: ${b.mode === "whatsapp" ? "📲 WhatsApp" : "👥 Group"}\n` +
+    `Receipt: ${b.mode === "whatsapp" ? "— (not used in WhatsApp mode)" : b.receipt ? "✅ uploaded (sent to the group)" : "⚠️ not uploaded"}\n` +
+    `Sent to: group${sent.length ? ", " + sent.map(escapeHtml).join(", ") : ""}\n\n` +
+    `<b>Package:</b> ${escapeHtml(sm.pkg || "")}\n<b>Date:</b> ${escapeHtml(sm.date || "")}\n<b>People:</b> ${escapeHtml(sm.people || "")}\n<b>Total:</b> ${escapeHtml(sm.total || "")}\n` +
+    (sm.name ? `<b>Name:</b> ${escapeHtml(sm.name)}\n` : "") + (sm.phone ? `<b>WhatsApp:</b> ${escapeHtml(sm.phone)}\n` : "") +
+    `\n━━━━━━━━━━━━\n<b>Full breakdown</b>\n\n${full}`;
+  const rows = [];
+  const digits = String(sm.phone || "").replace(/\D/g, "");
+  if (digits.length >= 10) rows.push([{ text: "💬 WhatsApp the customer", url: `https://wa.me/${digits}` }]);
+  rows.push([btn("⬅️ Back", back)]);
+  await tgSendMessage(env, chatId, text.slice(0, 4090), { reply_markup: kb(rows) });
+}
+
+async function sendSiteBMember(env, chatId, id) {
+  const m = (await getTeam(env)).find((x) => x.id === id);
+  if (!m) return sendSiteBTeamMenu(env, chatId, "That member no longer exists.");
+  const status = !m.chatId ? "⏳ waiting for them to paste the code" : m.active ? "🟢 receiving bookings" : "⏸ paused";
+  const rows = [];
+  if (m.chatId) rows.push([btn(m.active ? "⏸ Pause bookings" : "▶️ Resume bookings", `sbtoggle:${m.id}`)]);
+  rows.push([btn("📋 Bookings sent to them", `sbmbook:${m.id}`)]);
+  rows.push([btn("🔑 New code", `sbregen:${m.id}`)]);
+  rows.push([btn("🗑 Remove", `sbremove:${m.id}`)]);
+  rows.push([btn("⬅️ Back", "sbteam")]);
+  await tgSendMessage(env, chatId, `👤 <b>${escapeHtml(m.name)}</b>\nStatus: ${status}${m.code ? `\nCode: <code>${m.code}</code> (valid 7 days, one use)` : ""}`, { reply_markup: kb(rows) });
+}
+
 export async function handleTelegramAdminUpdate(env, update) {
   const msg = update.message;
   const cb = update.callback_query;
@@ -193,6 +292,7 @@ export async function handleTelegramAdminUpdate(env, update) {
     // Guide" in Guide Management). Anything else gets the standard
     // refusal.
     if (msg && msg.text && (await tryRedeemGuideCode(env, chatId, userId, msg))) return;
+    if (msg && msg.text && (await handleSiteBTeamUser(env, chatId, msg))) return;
     if (msg) await tgSendMessage(env, chatId, "❌ You're not recognized by this bot yet.");
     return;
   }
@@ -383,6 +483,8 @@ async function sendMainMenu(env, chatId, note) {
   // ---- 🏕 Website B submit mode — see site-b.js ----
   const sb = await getSiteBSettings(env);
   rows.push([btn(`🏕 Website B Submit: ${sb.mode === "whatsapp" ? "📲 WhatsApp" : "👥 Group"}`, "sitebmenu")]);
+
+  rows.push([btn("👥 Website B Team", "sbteam"), btn("📋 Website B Bookings", "sbbookings")]);
 
   // ---- 🔑 login & security — see auth.js ----
   const chatUserId = chatId; // admin normally messages the bot from their own personal chat, where chatId === their Telegram user id
@@ -1581,6 +1683,44 @@ async function handleCallback(env, chatId, messageId, data, userId) {
     return;
   }
 
+  // ---- 👥 Website B Team ----
+  if (action === "sbteam") return sendSiteBTeamMenu(env, chatId);
+  if (action === "sbadd") {
+    await setSession(env, chatId, { awaiting: { type: "sbname" } });
+    await tgSendMessage(env, chatId, "👥 Send the name of the person who will receive Website B bookings.", { reply_markup: kb([[btn("❌ Cancel", "sbteam")]]) });
+    return;
+  }
+  if (action === "sbmember") return sendSiteBMember(env, chatId, rest[0]);
+  if (action === "sbbookings") return sendSiteBBookings(env, chatId, null);
+  if (action === "sbmbook") return sendSiteBBookings(env, chatId, rest[0]);
+  if (action === "sbbk") return sendSiteBBookingDetail(env, chatId, rest[0], rest[1] || null);
+  if (action === "sbfind") {
+    await setSession(env, chatId, { awaiting: { type: "sbfind" } });
+    await tgSendMessage(env, chatId, "🔎 Send the booking ID (like <code>WB-LK3F9A</code>).", { reply_markup: kb([[btn("❌ Cancel", "sbbookings")]]) });
+    return;
+  }
+  if (action === "sbtoggle") {
+    const m = (await getTeam(env)).find((x) => x.id === rest[0]);
+    if (m) await setMemberActive(env, m.id, !m.active);
+    return sendSiteBMember(env, chatId, rest[0]);
+  }
+  if (action === "sbregen") {
+    const code = await regenerateCode(env, rest[0]);
+    if (!code) return sendSiteBTeamMenu(env, chatId, "That member no longer exists.");
+    await tgSendMessage(env, chatId, `🔑 New code:\n\n<code>${code}</code>\n\nSend it to them. They paste it into this bot. One use, valid 7 days. The old link is cleared until they paste it.`, { reply_markup: kb([[btn("⬅️ Back", `sbmember:${rest[0]}`)]]) });
+    return;
+  }
+  if (action === "sbremove") {
+    const m = (await getTeam(env)).find((x) => x.id === rest[0]);
+    if (!m) return sendSiteBTeamMenu(env, chatId, "That member no longer exists.");
+    await tgSendMessage(env, chatId, `⚠️ Remove <b>${escapeHtml(m.name)}</b>? They will stop getting Website B bookings.`, { reply_markup: kb([[btn("✅ Yes, remove", `sbremoveyes:${m.id}`)], [btn("❌ Cancel", `sbmember:${m.id}`)]]) });
+    return;
+  }
+  if (action === "sbremoveyes") {
+    await removeMember(env, rest[0]);
+    return sendSiteBTeamMenu(env, chatId, "🗑 Removed.");
+  }
+
   if (action === "togglemanualmode") {
     const nowOn = !(await isManualModeEnabled(env));
     await setManualModeEnabled(env, nowOn);
@@ -2451,6 +2591,27 @@ async function handleAwaitedInput(env, chatId, session, msg) {
     await setCredentialField(env, awaiting.site, awaiting.key, value);
     await clearSession(env, chatId);
     await sendPaymentMenu(env, chatId, awaiting.site, "✅ Saved.");
+    return;
+  }
+
+  if (awaiting.type === "sbfind") {
+    const id = (msg.text ?? "").trim().toUpperCase().replace(/\s+/g, "");
+    await clearSession(env, chatId);
+    return sendSiteBBookingDetail(env, chatId, /^WB-/.test(id) ? id : `WB-${id}`, null);
+  }
+
+  if (awaiting.type === "sbname") {
+    const name = (msg.text ?? "").trim().slice(0, 60);
+    if (!name) {
+      await tgSendMessage(env, chatId, "Please send a name as plain text, or tap Cancel.", { reply_markup: kb([[btn("❌ Cancel", "sbteam")]]) });
+      return;
+    }
+    const made = await createMember(env, name);
+    await clearSession(env, chatId);
+    if (!made) return sendSiteBTeamMenu(env, chatId, "⚠️ Team is full (50). Remove someone first.");
+    await tgSendMessage(env, chatId,
+      `✅ Code for <b>${escapeHtml(name)}</b>:\n\n<code>${made.code}</code>\n\nSend it to them. They open this bot and paste the code as a message. From that moment they receive every new Website B booking. One use, valid 7 days.`,
+      { reply_markup: kb([[btn("👥 Website B Team", "sbteam")]]) });
     return;
   }
 

@@ -14,6 +14,7 @@
  *   POST /api/siteb/receipt   multipart { id, file }  (group mode only) -> { ok }
  */
 import { getDoc, saveDoc } from "./store.js";
+import { activeRecipients, activeMembers, indexBooking } from "./siteb-team.js";
 
 const DOC_KEY = "settings:siteB";
 const GROUP = (env) => env.TELEGRAM_BOOKING_GROUP_ID || env.TELEGRAM_CHAT_ID;
@@ -77,7 +78,11 @@ export async function handleSiteBBooking(request, env) {
     ? `🏕 <b>New booking ${id}</b> <i>(Website B — via WhatsApp)</i>\n\n<b>Package:</b> ${esc(sum.pkg)}\n<b>Date:</b> ${esc(sum.date)}\n<b>People:</b> ${esc(sum.people)}\n<b>Total price:</b> ${esc(sum.total)}`
     : `🏕 <b>New booking ${id}</b> <i>(Website B)</i>\n\n${esc(message).replace(/\*([^*\n]+)\*/g, "<b>$1</b>")}`;
   const sent = await tg(env, "sendMessage", { chat_id: chat, parse_mode: "HTML", text: text.slice(0, 4000) }).catch(() => null);
-  await env.BOOKINGS.put(`siteb:${id}`, JSON.stringify({ id, mode: s.mode, summary: sum, message, at: new Date().toISOString() }), { expirationTtl: 60 * 60 * 24 * 30 });
+  // Everyone linked through "👥 Website B Team" also gets this booking in their own chat (best effort).
+  const team = await activeMembers(env).catch(() => []);
+  await Promise.all(team.map((m) => tg(env, "sendMessage", { chat_id: m.chatId, parse_mode: "HTML", text: text.slice(0, 4000) }).catch(() => null)));
+  await env.BOOKINGS.put(`siteb:${id}`, JSON.stringify({ id, mode: s.mode, summary: sum, message, sentTo: team.map((m) => ({ id: m.id, name: m.name })), receipt: false, at: new Date().toISOString() }), { expirationTtl: 60 * 60 * 24 * 180 });
+  await indexBooking(env, id, team.map((m) => m.id)).catch(() => {});
   if (!sent || !sent.ok) return reply(env, request, { ok: false, error: "Could not reach the booking group. Please try again." }, 502);
   return reply(env, request, { ok: true, id, mode: s.mode });
 }
@@ -87,13 +92,25 @@ export async function handleSiteBReceipt(request, env) {
   try { fd = await request.formData(); } catch { return reply(env, request, { ok: false, error: "Invalid upload." }, 400); }
   const id = clean(fd.get("id"), 30), file = fd.get("file");
   if (!/^WB-[A-Z0-9]+$/.test(id) || !file || typeof file === "string") return reply(env, request, { ok: false, error: "Bad upload." }, 400);
-  if (!(await env.BOOKINGS.get(`siteb:${id}`))) return reply(env, request, { ok: false, error: "Unknown booking." }, 404);
+  const rec = await env.BOOKINGS.get(`siteb:${id}`);
+  if (!rec) return reply(env, request, { ok: false, error: "Unknown booking." }, 404);
   if (!/^(image\/(jpeg|png)|application\/pdf)$/.test(file.type) || file.size > 3 * 1024 * 1024) return reply(env, request, { ok: false, error: "Receipt must be a JPG, PNG or PDF under 3 MB." }, 400);
   const out = new FormData();
   out.append("chat_id", GROUP(env));
   out.append("caption", `Receipt for ${id}`);
   out.append("document", file, `receipt-${id}.${file.type === "application/pdf" ? "pdf" : file.type === "image/png" ? "png" : "jpg"}`);
   const r = await tg(env, "sendDocument", out).catch(() => null);
+  const team = await activeRecipients(env).catch(() => []);
+  await Promise.all(team.map((c) => {
+    const o2 = new FormData();
+    o2.append("chat_id", c);
+    o2.append("caption", `Receipt for ${id}`);
+    o2.append("document", file, `receipt-${id}.${file.type === "application/pdf" ? "pdf" : file.type === "image/png" ? "png" : "jpg"}`);
+    return tg(env, "sendDocument", o2).catch(() => null);
+  }));
+  if (r && r.ok) {
+    try { const o = JSON.parse(rec); o.receipt = true; await env.BOOKINGS.put(`siteb:${id}`, JSON.stringify(o), { expirationTtl: 60 * 60 * 24 * 180 }); } catch {}
+  }
   return reply(env, request, { ok: !!(r && r.ok) }, r && r.ok ? 200 : 502);
 }
 
