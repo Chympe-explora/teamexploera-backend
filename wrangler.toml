@@ -14,9 +14,6 @@ kv_namespaces = [
 # see src/ratings-photos.js). Create it ONCE before deploying, or the
 # deploy will fail:
 #   npx wrangler r2 bucket create team-explo-era-rating-photos
-[[r2_buckets]]
-binding = "RATING_PHOTOS"
-bucket_name = "team-explo-era-rating-photos"
 
 # BOOKING_STATUS — a Durable Object, NOT KV. This is what makes booking
 # status polling reliable: KV is eventually consistent (a write can take
