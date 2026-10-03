@@ -53,7 +53,7 @@ ALLOWED_ORIGIN = "*"
 # CMS_TOKEN_SECRET) are NOT here — add them in the Cloudflare dashboard as "Secret".
 CMS_REQUIRE_CODE = "1"
 # Website B (Krem Chympe static site) origin allowed to call /api/siteb/* — ORIGIN ONLY, no path.
-SITE_B_ORIGIN = "https://chympe-explora.github.io"
+SITE_B_ORIGIN = "https://chympe-explora.github.io,https://team-eplo-era-explore.pages.dev"
 # The booking GROUP chat id (negative). Falls back to TELEGRAM_CHAT_ID if left empty.
 TELEGRAM_BOOKING_GROUP_ID = ""
 # Comma-separated Telegram numeric user ids allowed to drive the admin
