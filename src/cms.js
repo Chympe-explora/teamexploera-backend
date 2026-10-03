@@ -643,9 +643,83 @@ async function handleDeleteMedia(request, env, id) {
   return reply(env, request, { ok: true });
 }
 
+
+// ---- Website A (and its two destination pages): per-site feedback + text ----
+const A_SITES = ["root", "krem-chympe", "wilderness-expedition"];
+function siteParam(request) {
+  const s = new URL(request.url).searchParams.get("site");
+  return A_SITES.includes(s) ? s : null; // null = Website B (the original behaviour)
+}
+const ratingsDocFor = (site) => (site ? `ratings:${site}` : D.ratings);
+const A_PATH_SEG = /^[A-Za-z_][A-Za-z0-9_]{0,39}$/; // object keys only (no list indexes)
+function validAPath(path) {
+  if (typeof path !== "string" || path.length > 120) return false;
+  const parts = path.split(".");
+  if (parts.length < 2 || parts.length > 7) return false;
+  if (BLOCKED_TOP_LEVEL.has(parts[0])) return false;
+  return parts.every((p) => A_PATH_SEG.test(p) && !FORBIDDEN_SEGMENTS.has(p));
+}
+function setDeep(obj, path, value) {
+  const parts = path.split(".");
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const k = parts[i];
+    if (!cur[k] || typeof cur[k] !== "object" || Array.isArray(cur[k])) cur[k] = {};
+    cur = cur[k];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+function unsetDeep(obj, path) {
+  const parts = path.split(".");
+  const trail = [];
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (!cur || typeof cur[parts[i]] !== "object") return;
+    trail.push([cur, parts[i]]);
+    cur = cur[parts[i]];
+  }
+  delete cur[parts[parts.length - 1]];
+  for (let i = trail.length - 1; i >= 0; i--) { // tidy up now-empty parents
+    const [par, k] = trail[i];
+    if (par[k] && !Array.isArray(par[k]) && Object.keys(par[k]).length === 0) delete par[k]; else break;
+  }
+}
+async function handleAContentGet(request, env) {
+  const site = siteParam(request);
+  if (!site) return reply(env, request, { ok: false, error: "bad site" }, 400);
+  const doc = await getDoc(env, `content:${site}`, {});
+  return reply(env, request, { ok: true, site, content: doc || {} });
+}
+async function handleAContentPut(request, env) {
+  const site = siteParam(request);
+  if (!site) return reply(env, request, { ok: false, error: "bad site" }, 400);
+  const body = await readJson(request);
+  const set = body.set && typeof body.set === "object" ? body.set : {};
+  const unset = Array.isArray(body.unset) ? body.unset : [];
+  const keys = Object.keys(set);
+  if (keys.length + unset.length > 200) return reply(env, request, { ok: false, error: "Too many changes at once." }, 400);
+  const doc = (await getDoc(env, `content:${site}`, {})) || {};
+  for (const p of keys) {
+    if (!validAPath(p)) return reply(env, request, { ok: false, error: `That text can't be edited: ${p}` }, 400);
+    const v = set[p];
+    if (typeof v !== "string" && typeof v !== "number" && typeof v !== "boolean") return reply(env, request, { ok: false, error: `${p}: only text, numbers and on/off values can be edited here.` }, 400);
+    let clean = v;
+    if (typeof v === "string") {
+      if (BAD_SCHEME.test(v)) return reply(env, request, { ok: false, error: `${p}: that value isn't allowed.` }, 400);
+      clean = cleanStr(v, 4000);
+    }
+    setDeep(doc, p, clean);
+  }
+  for (const p of unset) if (validAPath(p)) unsetDeep(doc, p);
+  if (JSON.stringify(doc).length > 250000) return reply(env, request, { ok: false, error: "Too much edited text." }, 400);
+  await saveSafe(env, `content:${site}`, doc, `${site}: ${keys.length} text(s) saved, ${unset.length} reset${keys.length ? " — " + keys.slice(0, 6).join(", ") + (keys.length > 6 ? "…" : "") : ""}`);
+  return reply(env, request, { ok: true, site, content: doc });
+}
+
 // ---- feedback (the ratings doc the site + Telegram bot already share) ----
 async function handleFeedbackList(request, env) {
-  const list = await getDoc(env, D.ratings, []);
+  const key = ratingsDocFor(siteParam(request));
+  const list = await getDoc(env, key, []);
   const origin = new URL(request.url).origin;
   const items = (Array.isArray(list) ? list : []).map((r) => ({
     ...r,
@@ -656,14 +730,15 @@ async function handleFeedbackList(request, env) {
 
 async function handleFeedbackAction(request, env, id, method) {
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) return reply(env, request, { ok: false, error: "bad id" }, 400);
-  const list = await getDoc(env, D.ratings, []);
+  const rKey = ratingsDocFor(siteParam(request));
+  const list = await getDoc(env, rKey, []);
   const arr = Array.isArray(list) ? list : [];
   const idx = arr.findIndex((r) => r && r.id === id);
   if (idx < 0) return reply(env, request, { ok: false, error: "Not found." }, 404);
   if (method === "DELETE") {
     const [gone] = arr.splice(idx, 1);
     await deletePhotos(env, gone.photos || []).catch(() => {});
-    await saveSafe(env, D.ratings, arr, `deleted feedback from ${gone.name || "visitor"}`);
+    await saveSafe(env, rKey, arr, `deleted feedback from ${gone.name || "visitor"}`);
   } else {
     const { action } = await readJson(request);
     const e = arr[idx];
@@ -672,7 +747,7 @@ async function handleFeedbackAction(request, env, id, method) {
     else if (action === "pin") e.pinned = true;
     else if (action === "unpin") e.pinned = false;
     else return reply(env, request, { ok: false, error: "Unknown action." }, 400);
-    await saveSafe(env, D.ratings, arr, `${action} feedback from ${e.name || "visitor"}`);
+    await saveSafe(env, rKey, arr, `${action} feedback from ${e.name || "visitor"}`);
   }
   return reply(env, request, { ok: true });
 }
@@ -711,6 +786,8 @@ export async function handleCms(request, env, ctx, url) {
   if (method === "PUT" && p === "/api/cms/slots") return handlePutSlots(request, env);
   if (method === "POST" && p === "/api/cms/media") return handleUpload(request, env);
   if (method === "DELETE" && p.startsWith("/api/cms/media/")) return handleDeleteMedia(request, env, p.slice("/api/cms/media/".length));
+  if (method === "GET" && p === "/api/cms/a/content") return handleAContentGet(request, env);
+  if (method === "PUT" && p === "/api/cms/a/content") return handleAContentPut(request, env);
   if (method === "GET" && p === "/api/cms/feedback") return handleFeedbackList(request, env);
   if ((method === "POST" || method === "DELETE") && p.startsWith("/api/cms/feedback/")) return handleFeedbackAction(request, env, p.slice("/api/cms/feedback/".length), method);
 
