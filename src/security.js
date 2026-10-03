@@ -130,6 +130,11 @@ export function securityHeaders() {
 export function withSecurityHeaders(response, env) {
   const headers = new Headers(response.headers);
   for (const [k, v] of Object.entries(securityHeaders())) headers.set(k, v);
+  // cms.js (Website B dashboard + live content) sets its own, stricter CORS —
+  // locked to SITE_B_ORIGIN, with Authorization allowed. It flags that with
+  // this marker so the Worker-wide defaults below don't overwrite it.
+  const corsFinal = headers.get("x-cors-final");
+  headers.delete("x-cors-final");
   // CORS headers must be present on EVERY response this Worker returns,
   // including ones short-circuited by securityGate() (blocked IP, rate
   // limit, attack-pattern match) — those are built with raw `new
@@ -141,7 +146,7 @@ export function withSecurityHeaders(response, env) {
   // "network error" / "receipt upload failed" even though the Worker
   // responded normally. Adding it here, once, for every response,
   // closes that gap regardless of which code path built the response.
-  if (env) {
+  if (env && !corsFinal) {
     for (const [k, v] of Object.entries(corsHeaders(env))) headers.set(k, v);
   }
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
@@ -184,6 +189,10 @@ async function rateLimit(env, bucket, ip, limit, windowSeconds) {
 // Per-route limits. Anything not listed falls back to DEFAULT_LIMIT.
 // [bucket name, limit, windowSeconds]
 const ROUTE_LIMITS = [
+  [/^\/api\/cms\/login$/, 10, 900], // dashboard password attempts (cms.js also locks after 5 wrong guesses)
+  [/^\/api\/cms\/verify$/, 15, 900], // dashboard login code
+  [/^\/api\/cms\/media$/, 40, 60], // dashboard uploads
+  [/^\/api\/cms\//, 120, 60], // every other dashboard call (token-protected)
   [/^\/api\/siteb\/booking$/, 8, 300], // Website B submissions
   [/^\/api\/siteb\/receipt$/, 10, 300],
   [/^\/api\/siteb\/config$/, 60, 60],
@@ -209,7 +218,10 @@ const DEFAULT_LIMIT = [120, 60];
 // Worker (and, downstream, Telegram's API) into the ground.
 const GLOBAL_LIMIT = [240, 60];
 
-function limitFor(pathname) {
+function limitFor(pathname, method) {
+  // The tight "post a rating / review" caps are meant for SUBMITTING. Reading the
+  // reviews list happens on every page load, so GETs use the normal default.
+  if (method === "GET" && /^\/api\/(ratings|reviews)$/.test(pathname)) return DEFAULT_LIMIT;
   for (const [re, limit, windowSeconds] of ROUTE_LIMITS) {
     if (re.test(pathname)) return [limit, windowSeconds];
   }
@@ -347,6 +359,10 @@ const MAX_RATING_UPLOAD_BYTES = 7 * 1024 * 1024; // up to 3 review photos (2MB e
 function bodyTooLarge(request, url) {
   const len = parseInt(request.headers.get("content-length") || "0", 10);
   if (!len) return false; // no declared length — let it through, formData()/json() will still bound memory use
+  // Website B dashboard: uploads up to ~21MB (20MB file + form overhead); other dashboard
+  // saves are JSON but can carry a lot of edited text, so they get 256KB instead of 64KB.
+  if (url.pathname === "/api/cms/media" && request.method === "POST") return len > 21 * 1024 * 1024;
+  if (url.pathname.startsWith("/api/cms/")) return len > 256 * 1024;
   const isUpload = url.pathname === "/api/receipt" || url.pathname === "/api/siteb/receipt";
   // A rating with photos is multipart; a plain rating (JSON) keeps the 64KB cap.
   const isRatingWithPhotos =
@@ -406,6 +422,12 @@ export async function securityGate(request, env, ctx) {
   // could get a real visitor rate-limited.
   if (request.method === "GET" && url.pathname.startsWith("/api/rating-photo/")) return null;
 
+  // Website B's live content / version / uploaded media are public, edge-cached,
+  // read-only GETs hit on every page view. Counting them would burn a KV write
+  // each (the free plan only allows 1,000 per day), so they skip the gate like
+  // review photos do. Nothing here can change data.
+  if ((request.method === "GET" || request.method === "HEAD") && /^\/api\/siteb\/(content|version|media\/)/.test(url.pathname)) return null;
+
   const ip = normalizeIp(getClientIp(request));
 
   // 0. Trusted admin — bypass every check below entirely. Checked via
@@ -461,8 +483,9 @@ export async function securityGate(request, env, ctx) {
   // hole for malware, brute-force tools, or scanners.
   const exemption = await isRateLimitExempt(env, ip);
   if (!exemption) {
-    const [limit, windowSeconds] = limitFor(url.pathname);
-    const underRoute = await rateLimit(env, url.pathname, ip, limit, windowSeconds);
+    const [limit, windowSeconds] = limitFor(url.pathname, request.method);
+    const bucketName = request.method === "GET" && /^\/api\/(ratings|reviews)$/.test(url.pathname) ? url.pathname + ":get" : url.pathname; // reads must not eat the submit budget
+    const underRoute = await rateLimit(env, bucketName, ip, limit, windowSeconds);
     if (!underRoute) {
       const r = await addStrikes(env, ip, 1, `rate limit on ${url.pathname}`);
       await alertOnce(env, ctx, ip, "ratelimit-route", "Rate limit exceeded", `path: ${url.pathname}`, 900);

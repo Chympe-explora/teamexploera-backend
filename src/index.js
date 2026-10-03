@@ -83,6 +83,7 @@ import { json, corsHeaders, withEdgeCache, handleVisit, handleTap, handleDraft, 
 import { handleGetContent, handleGetPrices, handleGetImages, handleGetHighlights, handleGetDiscounts, handleGetBootstrap, handleCalculatePrice, handleMedia, handleVideoMedia, handleAdminResetImages } from "./content-api.js";
 import { handleTelegramAdminUpdate, isAdmin } from "./telegram-bot.js";
 import { handleSiteBConfig, handleSiteBBooking, handleSiteBReceipt, siteBPreflight } from "./site-b.js";
+import { handleCms, cmsPreflight, isCmsPath } from "./cms.js";
 import { getGuideByChatId } from "./guides.js";
 import { isLocked } from "./auth.js";
 import { tg } from "./telegram.js";
@@ -105,6 +106,7 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
+      if (isCmsPath(url.pathname)) return cmsPreflight(request, env);
       if (url.pathname.startsWith("/api/siteb/")) return siteBPreflight(request, env);
       return new Response(null, { headers: corsHeaders(env) });
     }
@@ -130,6 +132,12 @@ async function route(request, env, ctx, url) {
       // IP and the raw ADMIN_IPS var. ----
       if (url.pathname === "/api/whoami") {
         return json({ ok: true, ip: getClientIp(request), adminIpsRaw: env.ADMIN_IPS || "" }, env);
+      }
+
+      // ---- Website B dashboard API + live content/media — see cms.js ----
+      if (isCmsPath(url.pathname)) {
+        const cmsResponse = await handleCms(request, env, ctx, url);
+        if (cmsResponse) return cmsResponse;
       }
 
       // ---- Website B (static Krem Chympe site) — see site-b.js ----

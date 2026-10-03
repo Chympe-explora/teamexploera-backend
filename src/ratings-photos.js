@@ -5,9 +5,15 @@
 // `photos` array of R2 keys (empty array when there are none).
 //
 // Wired in by: ratings.js (POST /api/ratings), index.js (GET /api/rating-photo/*),
-// security.js (upload size + photo route), telegram-bot.js (delete cleanup),
-// wrangler.toml (R2 binding RATING_PHOTOS).
+// security.js (upload size + photo route), telegram-bot.js (delete cleanup).
+//
+// STORAGE: if an R2 bucket is bound as RATING_PHOTOS it is used. If NOT (no R2),
+// photos are kept in your Telegram admin chat instead (see tg-files.js) and the key ->
+// file_id link is stored in KV. The public URL (/api/rating-photo/reviews/<id>/<n>.webp)
+// is the same either way.
 // -----------------------------------------------------------------------------
+
+import { tgUploadDocument, tgDeleteMessage, tgServeFile } from "./tg-files.js";
 
 export const MAX_PHOTOS = 3;
 export const MAX_PHOTO_BYTES = 2 * 1024 * 1024;           // 2 MB each, after browser compression
@@ -66,32 +72,49 @@ export async function readRatingRequest(request) {
 export async function savePhotos(env, reviewId, files) {
   const keys = [];
   if (!files || !files.length) return keys;
-  if (!env.RATING_PHOTOS) return keys;
   for (let i = 0; i < files.length; i++) {
     const key = "reviews/" + reviewId + "/" + (i + 1) + ".webp";
-    await env.RATING_PHOTOS.put(key, files[i].bytes, { httpMetadata: { contentType: files[i].type } });
+    if (env.RATING_PHOTOS) {
+      await env.RATING_PHOTOS.put(key, files[i].bytes, { httpMetadata: { contentType: files[i].type } });
+    } else {
+      const up = await tgUploadDocument(env, files[i].bytes, files[i].type, `review-${reviewId}-${i + 1}.webp`, `📷 review photo ${reviewId}`);
+      await env.BOOKINGS.put("rphoto:" + key, JSON.stringify({ fid: up.fileId, mid: up.messageId, type: files[i].type }));
+    }
     keys.push(key);
   }
   return keys;
 }
 
 export async function deletePhotos(env, keys) {
-  if (!env.RATING_PHOTOS) return;
   const list = (keys || []).filter((k) => KEY_RE.test(k));
-  if (list.length) await env.RATING_PHOTOS.delete(list);
+  if (!list.length) return;
+  if (env.RATING_PHOTOS) await env.RATING_PHOTOS.delete(list);
+  for (const k of list) {
+    const raw = await env.BOOKINGS.get("rphoto:" + k).catch(() => null);
+    if (!raw) continue;
+    try { await tgDeleteMessage(env, JSON.parse(raw).mid); } catch {}
+    await env.BOOKINGS.delete("rphoto:" + k).catch(() => {});
+  }
 }
 
 // GET /api/rating-photo/reviews/<id>/<n>.webp
 export async function servePhoto(request, env, key) {
   if (!KEY_RE.test(key)) return new Response("Not found", { status: 404 });
-  const obj = await env.RATING_PHOTOS.get(key);
-  if (!obj) return new Response("Not found", { status: 404 });
-  return new Response(obj.body, {
-    headers: {
-      "content-type": (obj.httpMetadata && obj.httpMetadata.contentType) || "image/webp",
-      "cache-control": "public, max-age=31536000, immutable",
-      "access-control-allow-origin": "*",
-      "x-content-type-options": "nosniff",
-    },
-  });
+  if (env.RATING_PHOTOS) {
+    const obj = await env.RATING_PHOTOS.get(key);
+    if (obj) {
+      return new Response(obj.body, {
+        headers: {
+          "content-type": (obj.httpMetadata && obj.httpMetadata.contentType) || "image/webp",
+          "cache-control": "public, max-age=31536000, immutable",
+          "access-control-allow-origin": "*",
+          "x-content-type-options": "nosniff",
+        },
+      });
+    }
+  }
+  const raw = await env.BOOKINGS.get("rphoto:" + key);
+  if (!raw) return new Response("Not found", { status: 404 });
+  const rec = JSON.parse(raw);
+  return tgServeFile(request, env, rec.fid, rec.type || "image/webp", { "access-control-allow-origin": "*" });
 }
