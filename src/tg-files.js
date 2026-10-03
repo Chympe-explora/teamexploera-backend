@@ -16,8 +16,8 @@ import { tgResolveFileUrl } from "./telegram.js";
 export const TG_MAX_BYTES = 20 * 1024 * 1024;
 
 export async function tgUploadDocument(env, bytes, mime, filename, caption) {
-  const chatId = env.TELEGRAM_ADMIN_CHAT_ID;
-  if (!chatId || !env.TELEGRAM_BOT_TOKEN) throw new Error("Telegram storage is not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_ADMIN_CHAT_ID).");
+  const chatId = env.TELEGRAM_ADMIN_CHAT_ID || env.TELEGRAM_CHAT_ID;
+  if (!chatId || !env.TELEGRAM_BOT_TOKEN) throw new Error("Telegram storage is not configured (TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_CHAT_ID or TELEGRAM_CHAT_ID).");
   const form = new FormData();
   form.append("chat_id", chatId);
   form.append("disable_notification", "true");
@@ -25,17 +25,21 @@ export async function tgUploadDocument(env, bytes, mime, filename, caption) {
   form.append("document", new Blob([bytes], { type: mime }), filename);
   const r = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: "POST", body: form });
   const j = await r.json().catch(() => null);
-  const doc = j && j.ok && j.result && j.result.document;
+  // Telegram may label an image document as document, sticker, photo or animation.
+  const res = j && j.ok && j.result;
+  const photo = res && Array.isArray(res.photo) && res.photo.length ? res.photo[res.photo.length - 1] : null;
+  const doc = res && (res.document || res.sticker || res.animation || photo);
   if (!doc || !doc.file_id) throw new Error("Telegram did not accept the file" + (j && j.description ? ": " + j.description : "."));
   return { fileId: doc.file_id, messageId: j.result.message_id };
 }
 
 export async function tgDeleteMessage(env, messageId) {
-  if (!messageId || !env.TELEGRAM_ADMIN_CHAT_ID) return;
+  const chatId = env.TELEGRAM_ADMIN_CHAT_ID || env.TELEGRAM_CHAT_ID;
+  if (!messageId || !chatId) return;
   await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/deleteMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: env.TELEGRAM_ADMIN_CHAT_ID, message_id: messageId }),
+    body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
   }).catch(() => {});
 }
 

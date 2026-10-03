@@ -77,7 +77,8 @@ export async function savePhotos(env, reviewId, files) {
     if (env.RATING_PHOTOS) {
       await env.RATING_PHOTOS.put(key, files[i].bytes, { httpMetadata: { contentType: files[i].type } });
     } else {
-      const up = await tgUploadDocument(env, files[i].bytes, files[i].type, `review-${reviewId}-${i + 1}.webp`, `📷 review photo ${reviewId}`);
+      const ext = files[i].type === "image/png" ? "png" : files[i].type === "image/jpeg" ? "jpg" : "webp";
+      const up = await tgUploadDocument(env, files[i].bytes, files[i].type, `review-${reviewId}-${i + 1}.${ext}`, `📷 review photo ${reviewId}`);
       await env.BOOKINGS.put("rphoto:" + key, JSON.stringify({ fid: up.fileId, mid: up.messageId, type: files[i].type }));
     }
     keys.push(key);

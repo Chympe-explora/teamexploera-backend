@@ -95,6 +95,9 @@ export async function handleSubmitRating(request, env) {
     try {
       entry.photos = await savePhotos(env, entry.id, parsed.files);
     } catch (e) {
+      console.error("rating photo save failed:", e && e.message);
+      const adminChat = env.TELEGRAM_ADMIN_CHAT_ID || env.TELEGRAM_CHAT_ID;
+      if (adminChat) await tgSendMessage(env, adminChat, "\u26a0\ufe0f Review photo could not be saved: " + String((e && e.message) || e).slice(0, 300)).catch(() => {});
       return json({ ok: false, error: "photo_invalid", photoError: true, message: "Photo upload isn't available right now. Please submit your rating without photos." }, env, 503);
     }
   }
