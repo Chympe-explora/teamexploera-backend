@@ -48,6 +48,10 @@ new_sqlite_classes = ["BookingStatusDO"]
 # empty — they must live here, not only in the dashboard.
 [vars]
 ALLOWED_ORIGIN = "*"
+# Website B dashboard login: "1" = password + a 6-digit code sent to your Telegram
+# admin chat. "0" = password only. The two SECRETS (CMS_ADMIN_PASSWORD,
+# CMS_TOKEN_SECRET) are NOT here — add them in the Cloudflare dashboard as "Secret".
+CMS_REQUIRE_CODE = "1"
 # Website B (Krem Chympe static site) origin allowed to call /api/siteb/* — ORIGIN ONLY, no path.
 SITE_B_ORIGIN = "https://chympe-explora.github.io"
 # The booking GROUP chat id (negative). Falls back to TELEGRAM_CHAT_ID if left empty.
